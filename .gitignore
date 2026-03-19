@@ -1,0 +1,14 @@
+.env*
+!.env.example
+
+data/
+results/
+.kamal/
+*.crt
+*.db
+*.db-shm
+*.db-wal
+service-key.json
+brandon-bot
+
+Service.plist
