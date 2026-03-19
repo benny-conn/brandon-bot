@@ -61,7 +61,9 @@ func resolveStrategy(name string) (strategy.Strategy, error) {
 	switch name {
 	case "ma_crossover":
 		return strategy.NewMACrossover(), nil
+	case "rsi_pullback":
+		return strategy.NewRSIPullback(), nil
 	default:
-		return nil, fmt.Errorf("available strategies: ma_crossover")
+		return nil, fmt.Errorf("available strategies: ma_crossover, rsi_pullback")
 	}
 }
