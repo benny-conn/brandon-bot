@@ -5,6 +5,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+
 	"brandon-bot/internal/market"
 	"brandon-bot/internal/portfolio"
 	"brandon-bot/internal/strategy"
@@ -70,7 +72,7 @@ func (e *Engine) recover(symbols []string) error {
 
 	log.Printf("recovery: fetching %d bars of %s history for warm-up...", e.config.WarmupBars, e.config.Timeframe)
 
-	ticks, err := market.NewClient().FetchBarsForSymbols(symbols, start, end, tf)
+	ticks, err := market.NewClient().FetchBarsForSymbols(symbols, start, end, tf, marketdata.Feed(e.config.Feed))
 	if err != nil {
 		return fmt.Errorf("fetching warm-up bars: %w", err)
 	}

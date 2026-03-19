@@ -41,7 +41,7 @@ func main() {
 	defer store.Close()
 
 	exec := execution.NewPaperExecutor()
-	cfg := paper.DefaultConfig(*capitalFlag, *timeframeFlag)
+	cfg := paper.DefaultConfig(*capitalFlag, *timeframeFlag, *feedFlag)
 	engine := paper.NewEngine(strat, exec, store, cfg)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

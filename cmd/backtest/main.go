@@ -59,7 +59,7 @@ func main() {
 		from.Format("2006-01-02"), to.Format("2006-01-02"))
 
 	client := market.NewClient()
-	ticks, err := client.FetchBarsForSymbols(symbols, from, to, tf)
+	ticks, err := client.FetchBarsForSymbols(symbols, from, to, tf, "")
 	if err != nil {
 		log.Fatalf("fetching historical data: %v", err)
 	}

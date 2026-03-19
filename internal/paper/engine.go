@@ -20,13 +20,15 @@ import (
 type Config struct {
 	Capital    float64
 	Timeframe  string
-	WarmupBars int // number of historical bars to replay on startup for indicator warm-up
+	Feed       string // "iex" (free) or "sip" (paid) — used for both live stream and warm-up fetch
+	WarmupBars int    // number of historical bars to replay on startup for indicator warm-up
 }
 
-func DefaultConfig(capital float64, timeframe string) Config {
+func DefaultConfig(capital float64, timeframe, feed string) Config {
 	return Config{
 		Capital:    capital,
 		Timeframe:  timeframe,
+		Feed:       feed,
 		WarmupBars: 100,
 	}
 }
@@ -97,29 +99,26 @@ func (e *Engine) Run(ctx context.Context, symbols []string, feed string) error {
 		}
 	})
 
-	sc := stream.NewStocksClient(
-		marketdata.Feed(feed),
+	// Build stream options. WithBars/WithTrades must be passed at construction time —
+	// SubscribeToBars/SubscribeToTrades are only for dynamic changes after Connect.
+	opts := []stream.StockOption{
 		stream.WithCredentials(os.Getenv("ALPACA_API_KEY"), os.Getenv("ALPACA_SECRET")),
-	)
-
-	// All strategies get bar events.
-	if err := sc.SubscribeToBars(func(bar stream.Bar) {
-		e.send(ctx, tickEvent{tick: strategy.Tick{
-			Symbol:    bar.Symbol,
-			Timestamp: bar.Timestamp,
-			Open:      bar.Open,
-			High:      bar.High,
-			Low:       bar.Low,
-			Close:     bar.Close,
-			Volume:    int64(bar.Volume),
-		}})
-	}, symbols...); err != nil {
-		return fmt.Errorf("subscribing to bars: %w", err)
+		stream.WithBars(func(bar stream.Bar) {
+			e.send(ctx, tickEvent{tick: strategy.Tick{
+				Symbol:    bar.Symbol,
+				Timestamp: bar.Timestamp,
+				Open:      bar.Open,
+				High:      bar.High,
+				Low:       bar.Low,
+				Close:     bar.Close,
+				Volume:    int64(bar.Volume),
+			}})
+		}, symbols...),
 	}
 
 	// If the strategy implements TradeSubscriber, also subscribe to individual trades.
 	if _, ok := e.strategy.(strategy.TradeSubscriber); ok {
-		if err := sc.SubscribeToTrades(func(t stream.Trade) {
+		opts = append(opts, stream.WithTrades(func(t stream.Trade) {
 			e.send(ctx, tradeEvent{trade: strategy.Trade{
 				Symbol:     t.Symbol,
 				Timestamp:  t.Timestamp,
@@ -128,16 +127,23 @@ func (e *Engine) Run(ctx context.Context, symbols []string, feed string) error {
 				Exchange:   t.Exchange,
 				Conditions: t.Conditions,
 			}})
-		}, symbols...); err != nil {
-			return fmt.Errorf("subscribing to trades: %w", err)
-		}
+		}, symbols...))
 		log.Printf("paper engine: trade-level subscription active for %v", symbols)
 	}
 
+	sc := stream.NewStocksClient(marketdata.Feed(feed), opts...)
+
 	go e.processLoop(ctx)
 
+	if err := sc.Connect(ctx); err != nil {
+		return fmt.Errorf("connecting to stream: %w", err)
+	}
 	log.Printf("paper engine: connected, watching %v on feed=%s", symbols, feed)
-	return sc.Connect(ctx) // blocks until ctx cancelled or fatal error
+
+	// Connect() returns once the initial handshake succeeds; the SDK's reconnect
+	// loop runs in the background. Block here until the context is cancelled (Ctrl+C).
+	<-ctx.Done()
+	return nil
 }
 
 // send routes an event to the processing loop, dropping it with a warning if the

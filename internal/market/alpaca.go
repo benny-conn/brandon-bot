@@ -27,11 +27,13 @@ func NewClient() *Client {
 
 // FetchBars retrieves historical OHLCV bars for a single symbol and returns them as Ticks.
 // start/end are in UTC. tf is the bar timeframe (e.g. marketdata.OneMin).
-func (c *Client) FetchBars(symbol string, start, end time.Time, tf marketdata.TimeFrame) ([]strategy.Tick, error) {
+// feed selects the data source ("iex" for free tier, "sip" for paid); empty string uses the Alpaca default.
+func (c *Client) FetchBars(symbol string, start, end time.Time, tf marketdata.TimeFrame, feed marketdata.Feed) ([]strategy.Tick, error) {
 	bars, err := c.md.GetBars(symbol, marketdata.GetBarsRequest{
 		TimeFrame: tf,
 		Start:     start,
 		End:       end,
+		Feed:      feed,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("fetching bars for %s: %w", symbol, err)
@@ -54,7 +56,7 @@ func (c *Client) FetchBars(symbol string, start, end time.Time, tf marketdata.Ti
 
 // FetchBarsForSymbols fetches historical bars for multiple symbols concurrently
 // and returns them merged and sorted by timestamp, ready for backtesting replay.
-func (c *Client) FetchBarsForSymbols(symbols []string, start, end time.Time, tf marketdata.TimeFrame) ([]strategy.Tick, error) {
+func (c *Client) FetchBarsForSymbols(symbols []string, start, end time.Time, tf marketdata.TimeFrame, feed marketdata.Feed) ([]strategy.Tick, error) {
 	type result struct {
 		ticks []strategy.Tick
 		err   error
@@ -63,7 +65,7 @@ func (c *Client) FetchBarsForSymbols(symbols []string, start, end time.Time, tf 
 	ch := make(chan result, len(symbols))
 	for _, sym := range symbols {
 		go func(s string) {
-			ticks, err := c.FetchBars(s, start, end, tf)
+			ticks, err := c.FetchBars(s, start, end, tf, feed)
 			ch <- result{ticks, err}
 		}(sym)
 	}
