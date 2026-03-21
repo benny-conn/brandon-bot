@@ -83,7 +83,9 @@ func resolveStrategy(name string) (strategy.Strategy, error) {
 		return strategy.NewMACrossover(), nil
 	case "rsi_pullback":
 		return strategy.NewRSIPullback(), nil
+	case "five_min_orb":
+		return strategy.NewFiveMinuteORB(strategy.FiveMinuteORBConfig{}), nil
 	default:
-		return nil, fmt.Errorf("available strategies: ma_crossover, rsi_pullback")
+		return nil, fmt.Errorf("available strategies: ma_crossover, rsi_pullback, five_min_orb")
 	}
 }
