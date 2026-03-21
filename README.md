@@ -1,25 +1,34 @@
 # brandon-bot
 
-A paper trading backtester and live simulator in Go. Test a day trading strategy against historical data or run it live against an Alpaca paper account without risking real money.
+A paper trading backtester and live simulator in Go. Test a day trading strategy against historical data or run it live against a paper account without risking real money.
+
+Supports two providers: **Alpaca** (stocks/ETFs) and **Interactive Brokers** (stocks, futures, and more). Swap between them with a single flag.
 
 ---
 
 ## Prerequisites
 
 - Go 1.22+
-- An [Alpaca Markets](https://alpaca.markets) account (free)
+- An [Alpaca Markets](https://alpaca.markets) account (free) — for backtesting and Alpaca paper trading
+- An [Interactive Brokers](https://www.interactivebrokers.com) account with paper trading enabled — for IBKR live paper trading
 - Environment variables set in your shell (see below)
 
 ## Environment Variables
 
+**Alpaca** (required for backtesting and `--provider=alpaca`):
 ```bash
 ALPACA_API_KEY=your_key_here
 ALPACA_SECRET=your_secret_here
 ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
-DATABASE_PATH=./trading_bot.db   # optional, defaults to ./trading_bot.db
 ```
 
-Get your API keys from the Alpaca dashboard under **Paper Trading** → **API Keys**.
+**IBKR** (required for `--provider=ibkr`):
+```bash
+IBKR_ACCOUNT_ID=DU1234567                  # your paper account ID
+IBKR_GATEWAY_URL=https://localhost:5055    # optional, this is the default
+```
+
+IBKR also requires **IB Gateway** running locally before starting the bot — see [IBKR Setup](#ibkr-setup) below.
 
 ---
 
@@ -39,14 +48,15 @@ go run cmd/backtest/main.go \
 
 **Flags:**
 
-| Flag          | Default        | Description                             |
-| ------------- | -------------- | --------------------------------------- |
-| `--strategy`  | `ma_crossover` | Strategy to run                         |
-| `--symbols`   | `AAPL`         | Comma-separated ticker list             |
-| `--from`      | required       | Start date (YYYY-MM-DD)                 |
-| `--to`        | required       | End date (YYYY-MM-DD)                   |
-| `--timeframe` | `1d`           | Bar size: `1m`, `5m`, `15m`, `1h`, `1d` |
-| `--capital`   | `10000`        | Starting capital in USD                 |
+| Flag          | Default        | Description                              |
+| ------------- | -------------- | ---------------------------------------- |
+| `--strategy`  | `ma_crossover` | Strategy to run                          |
+| `--symbols`   | `AAPL`         | Comma-separated ticker list              |
+| `--from`      | required       | Start date (YYYY-MM-DD)                  |
+| `--to`        | required       | End date (YYYY-MM-DD)                    |
+| `--timeframe` | `1d`           | Bar size: `1m`, `5m`, `15m`, `1h`, `1d`  |
+| `--capital`   | `10000`        | Starting capital in USD                  |
+| `--feed`      | `iex`          | Alpaca feed: `iex` (free) or `sip` (paid)|
 
 **Output:**
 
@@ -76,10 +86,13 @@ Results and fills are saved to SQLite for later review.
 
 ## Running Paper Trading (Live)
 
-Connects to Alpaca via WebSocket, streams real-time bars, and places orders against your paper account. This is a long-running process — it stays alive during market hours and shuts down cleanly on `Ctrl+C`.
+Connects to a broker via WebSocket, streams real-time bars, and places orders against your paper account. This is a long-running process — stays alive during market hours and shuts down cleanly on `Ctrl+C`.
+
+### Alpaca
 
 ```bash
 go run cmd/paper/main.go \
+  --provider=alpaca \
   --strategy=ma_crossover \
   --symbols=AAPL,TSLA \
   --timeframe=1m \
@@ -87,24 +100,55 @@ go run cmd/paper/main.go \
   --feed=iex
 ```
 
+### IBKR
+
+```bash
+go run cmd/paper/main.go \
+  --provider=ibkr \
+  --strategy=ma_crossover \
+  --symbols=AAPL \
+  --timeframe=1m \
+  --capital=10000
+```
+
 **Flags:**
 
-| Flag          | Default        | Description                                                                               |
-| ------------- | -------------- | ----------------------------------------------------------------------------------------- |
-| `--strategy`  | `ma_crossover` | Strategy to run                                                                           |
-| `--symbols`   | `AAPL`         | Comma-separated ticker list                                                               |
-| `--timeframe` | `1m`           | Bar size: `1m`, `5m`, `15m`, `1h`, `1d`                                                   |
-| `--capital`   | `10000`        | Starting capital (used only on first run, subsequent runs seed from Alpaca account state) |
-| `--feed`      | `iex`          | Market data feed: `iex` (free) or `sip` (paid)                                            |
+| Flag           | Default        | Description                                                                               |
+| -------------- | -------------- | ----------------------------------------------------------------------------------------- |
+| `--provider`   | `alpaca`       | Data + execution provider: `alpaca` or `ibkr`                                             |
+| `--strategy`   | `ma_crossover` | Strategy to run                                                                           |
+| `--symbols`    | `AAPL`         | Comma-separated ticker list                                                               |
+| `--timeframe`  | `1m`           | Bar size: `1s`, `1m`, `5m`, `15m`, `1h`, `1d`                                            |
+| `--capital`    | `10000`        | Starting capital (used only on first run — subsequent runs seed from real account state)  |
+| `--feed`       | `iex`          | Alpaca feed: `iex` (free) or `sip` (paid) — ignored for IBKR                             |
 
 **On startup**, the engine automatically:
 
-1. Fetches your real account balance and open positions from Alpaca
+1. Fetches your real account balance and open positions from the broker
 2. Replays recent historical bars to warm up strategy indicators (EMAs, etc.)
 3. Injects any existing positions into the strategy so it knows what it's holding
-4. Then begins the live stream
+4. Then begins the live WebSocket stream
 
 This means **restarting the bot mid-session is safe** — it picks up from the correct state rather than thinking it has no positions.
+
+---
+
+## IBKR Setup
+
+IBKR paper trading requires **IB Gateway** running locally. IB Gateway is a lightweight headless process (no charts UI) that the bot connects to via the Client Portal API.
+
+1. Download **IB Gateway** from [ibkr.com](https://www.interactivebrokers.com/en/trading/ibgateway.php) (use the stable/latest channel)
+2. Log in with your **paper account** credentials
+3. IB Gateway listens on `https://localhost:5055` — leave it running while the bot is active
+4. Set `IBKR_ACCOUNT_ID` to your paper account ID (format `DU1234567`, visible after login)
+5. Run the bot with `--provider=ibkr`
+
+The bot sends a keep-alive ping to IB Gateway every 55 seconds to maintain the session. You do not need to do anything else to keep it connected.
+
+**Getting a paper account:**
+1. Sign up for a live IBKR account at ibkr.com and wait for approval (~1–3 business days)
+2. After approval, log into the Client Portal → **Settings → Paper Trading Account** to create one
+3. The paper account gets its own separate login credentials
 
 ---
 
@@ -113,33 +157,33 @@ This means **restarting the bot mid-session is safe** — it picks up from the c
 ```
 brandon-bot/
 ├── cmd/
-│   ├── backtest/main.go     # CLI: run a backtest
-│   └── paper/main.go        # CLI: run paper trading live
+│   ├── backtest/main.go          # CLI: run a backtest
+│   └── paper/main.go             # CLI: run paper trading live
 ├── internal/
+│   ├── provider/
+│   │   ├── provider.go           # MarketData + Execution interfaces and shared types
+│   │   ├── alpaca/
+│   │   │   └── alpaca.go         # Alpaca implementation (stocks/ETFs, iex/sip feeds)
+│   │   └── ibkr/
+│   │       ├── client.go         # IB Gateway HTTP + WebSocket client
+│   │       └── ibkr.go           # IBKR implementation (stocks, futures)
 │   ├── strategy/
-│   │   ├── strategy.go      # Core interfaces: Strategy, Portfolio, Tick, Order, Fill
-│   │   └── ma_crossover.go  # Example: 9/21 EMA crossover strategy
+│   │   ├── strategy.go           # Core interfaces: Strategy, Portfolio, Tick, Order, Fill
+│   │   ├── ma_crossover.go       # Example: 9/21 EMA crossover strategy
+│   │   └── rsi_pullback.go       # Example: RSI pullback with 200-SMA trend filter
 │   ├── portfolio/
-│   │   └── portfolio.go     # Tracks cash, positions, P&L
-│   ├── market/
-│   │   ├── alpaca.go        # Alpaca REST client (fetch historical bars)
-│   │   └── historical.go    # Tick sorting utilities
+│   │   └── portfolio.go          # Tracks cash, positions, P&L
 │   ├── backtest/
-│   │   └── engine.go        # Backtesting engine + performance metrics
+│   │   └── engine.go             # Backtesting engine + performance metrics
 │   ├── paper/
-│   │   ├── engine.go        # Live paper trading engine (WebSocket loop)
-│   │   └── recovery.go      # Startup state recovery from Alpaca
-│   ├── execution/
-│   │   ├── paper.go         # Submits orders to Alpaca REST API
-│   │   └── simulated.go     # (placeholder for backtest fill logic)
+│   │   ├── engine.go             # Live paper trading engine (WebSocket event loop)
+│   │   └── recovery.go           # Startup state recovery from broker
 │   ├── risk/
-│   │   └── risk.go          # Position sizing helpers
+│   │   └── risk.go               # Position sizing helpers
 │   └── db/
-│       └── db.go            # SQLite logging (runs, fills, snapshots)
-├── data/                    # Historical data cache (gitignored)
-├── results/                 # Backtest output (gitignored)
+│       └── db.go                 # SQLite logging (runs, fills, snapshots)
 ├── go.mod
-└── .env.example
+└── go.sum
 ```
 
 ---
@@ -202,7 +246,9 @@ go run cmd/backtest/main.go --strategy=my_strategy --symbols=AAPL --from=2024-01
 
 ---
 
-## Built-in Strategy: MA Crossover
+## Built-in Strategies
+
+### MA Crossover
 
 A simple 9/21 exponential moving average crossover, included as a working example to validate the engine. **Not intended for real use.**
 
@@ -210,17 +256,9 @@ A simple 9/21 exponential moving average crossover, included as a working exampl
 - **Sell signal**: 9-period EMA crosses below 21-period EMA → sell full position
 - **Stop loss**: price drops 2% below entry → sell immediately
 
----
+### RSI Pullback
 
-## Live Trading (Future)
-
-When ready to trade with real money, the architecture is identical — just swap the API keys and base URL:
-
-```bash
-ALPACA_BASE_URL=https://api.alpaca.markets/v2
-```
-
-A `cmd/live/main.go` will be added with additional safeguards (position limits, kill switch, etc.) before this is used.
+RSI-based pullback strategy with a 200-period SMA trend filter.
 
 ---
 
@@ -228,10 +266,25 @@ A `cmd/live/main.go` will be added with additional safeguards (position limits, 
 
 Results are logged to SQLite at `DATABASE_PATH` (default: `./trading_bot.db`).
 
-| Table             | Contents                                  |
-| ----------------- | ----------------------------------------- |
-| `backtest_runs`   | Summary metrics for each backtest run     |
-| `backtest_fills`  | Individual fills from each run            |
-| `paper_orders`    | Orders submitted during paper trading     |
-| `paper_fills`     | Fill confirmations from Alpaca            |
-| `paper_snapshots` | Portfolio snapshots taken after each fill |
+| Table              | Contents                                  |
+| ------------------ | ----------------------------------------- |
+| `backtest_runs`    | Summary metrics for each backtest run     |
+| `backtest_fills`   | Individual fills from each run            |
+| `paper_orders`     | Orders submitted during paper trading     |
+| `paper_fills`      | Fill confirmations from the broker        |
+| `paper_snapshots`  | Portfolio snapshots taken after each fill |
+
+---
+
+## Live Trading (Future)
+
+When ready to trade with real money, the architecture is identical — just swap credentials:
+
+**Alpaca live:**
+```bash
+ALPACA_BASE_URL=https://api.alpaca.markets/v2
+```
+
+**IBKR live:** point IB Gateway at your live account instead of paper.
+
+A `cmd/live/main.go` will be added with additional safeguards (position limits, kill switch, etc.) before this is used.
