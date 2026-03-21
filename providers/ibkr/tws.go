@@ -23,6 +23,11 @@ type posResult struct {
 	avg    float64
 }
 
+// ibkrQuoteState tracks the latest bid/ask for a streaming quote subscription.
+type ibkrQuoteState struct {
+	bid, bidSize, ask, askSize float64
+}
+
 // tws wraps hadrianl/ibapi and bridges its callbacks to channels/handlers.
 // It embeds ibapi.Wrapper for default (zap-logged) no-op implementations of
 // all 89 IbWrapper methods; we only override the ones we actually use.
@@ -40,6 +45,8 @@ type tws struct {
 	liveBars      map[int64]func(provider.Bar) // reqID → HistoricalDataUpdate handler
 	histDone      map[int64]chan struct{}       // reqID → signals backfill complete
 	tradeHandlers map[int64]func(provider.Trade)
+	quoteHandlers map[int64]func(provider.Quote)
+	quoteStates   map[int64]*ibkrQuoteState
 	acctSumm      map[int64]chan acctField
 	acctEnd       map[int64]chan struct{}
 	fillHandler   func(provider.Fill)
@@ -48,6 +55,10 @@ type tws struct {
 	posMu  sync.Mutex
 	posCh  chan posResult
 	posEnd chan struct{}
+
+	openOrdersMu   sync.Mutex
+	openOrdersCh   chan provider.OpenOrder
+	openOrdersDone chan struct{}
 }
 
 func newTWS(host string, port int) (*tws, error) {
@@ -57,6 +68,8 @@ func newTWS(host string, port int) (*tws, error) {
 		liveBars:      make(map[int64]func(provider.Bar)),
 		histDone:      make(map[int64]chan struct{}),
 		tradeHandlers: make(map[int64]func(provider.Trade)),
+		quoteHandlers: make(map[int64]func(provider.Quote)),
+		quoteStates:   make(map[int64]*ibkrQuoteState),
 		acctSumm:      make(map[int64]chan acctField),
 		acctEnd:       make(map[int64]chan struct{}),
 		orderChans:    make(map[int64]chan string),
@@ -244,6 +257,95 @@ func (t *tws) Error(reqID int64, errCode int64, errString string) {
 		log.Printf("ibkr info [%d]: %s", errCode, errString)
 	} else {
 		log.Printf("ibkr error [req=%d code=%d]: %s", reqID, errCode, errString)
+	}
+}
+
+func (t *tws) TickPrice(reqID int64, tickType int64, price float64, _ ibapi.TickAttrib) {
+	t.mu.RLock()
+	h := t.quoteHandlers[reqID]
+	s := t.quoteStates[reqID]
+	t.mu.RUnlock()
+	if h == nil || s == nil {
+		return
+	}
+	switch tickType {
+	case 1: // bid
+		s.bid = price
+	case 2: // ask
+		s.ask = price
+	default:
+		return
+	}
+	if s.bid > 0 && s.ask > 0 {
+		h(provider.Quote{
+			Timestamp: time.Now().UTC(),
+			BidPrice:  s.bid,
+			BidSize:   s.bidSize,
+			AskPrice:  s.ask,
+			AskSize:   s.askSize,
+		})
+	}
+}
+
+func (t *tws) TickSize(reqID int64, tickType int64, size int64) {
+	t.mu.RLock()
+	s := t.quoteStates[reqID]
+	t.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	switch tickType {
+	case 0: // bid size
+		s.bidSize = float64(size)
+	case 3: // ask size
+		s.askSize = float64(size)
+	}
+}
+
+func (t *tws) OpenOrder(orderID int64, contract *ibapi.Contract, order *ibapi.Order, _ *ibapi.OrderState) {
+	t.openOrdersMu.Lock()
+	ch := t.openOrdersCh
+	t.openOrdersMu.Unlock()
+	if ch == nil {
+		return
+	}
+	side := "buy"
+	if order.Action == "SELL" {
+		side = "sell"
+	}
+	orderType := "market"
+	switch order.OrderType {
+	case "LMT":
+		orderType = "limit"
+	case "STP":
+		orderType = "stop"
+	case "STP LMT":
+		orderType = "stop_limit"
+	}
+	select {
+	case ch <- provider.OpenOrder{
+		ID:         strconv.FormatInt(orderID, 10),
+		Symbol:     contract.Symbol,
+		Side:       side,
+		Qty:        order.TotalQuantity,
+		OrderType:  orderType,
+		LimitPrice: order.LimitPrice,
+		StopPrice:  order.AuxPrice,
+	}:
+	default:
+	}
+}
+
+func (t *tws) OpenOrderEnd() {
+	t.openOrdersMu.Lock()
+	ch := t.openOrdersDone
+	t.openOrdersMu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
 	}
 }
 

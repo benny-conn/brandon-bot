@@ -26,6 +26,28 @@ type Trade struct {
 	Size      float64
 }
 
+// Quote is a real-time bid/ask update from the exchange.
+type Quote struct {
+	Symbol    string
+	Timestamp time.Time
+	BidPrice  float64
+	BidSize   float64
+	AskPrice  float64
+	AskSize   float64
+}
+
+// OpenOrder is a pending order that has not yet been fully filled or cancelled.
+type OpenOrder struct {
+	ID         string
+	Symbol     string
+	Side       string  // "buy" or "sell"
+	Qty        float64 // total ordered quantity
+	Filled     float64 // quantity filled so far
+	OrderType  string  // "market", "limit", "stop", "stop_limit"
+	LimitPrice float64
+	StopPrice  float64
+}
+
 // Fill is a completed or partial order execution.
 type Fill struct {
 	OrderID   string
@@ -69,6 +91,9 @@ type MarketData interface {
 	// SubscribeTrades streams live individual trade prints, calling handler for each.
 	// Blocks until ctx is cancelled.
 	SubscribeTrades(ctx context.Context, symbols []string, handler func(Trade)) error
+	// SubscribeQuotes streams live bid/ask quote updates, calling handler for each.
+	// Blocks until ctx is cancelled.
+	SubscribeQuotes(ctx context.Context, symbols []string, handler func(Quote)) error
 }
 
 // Execution manages orders and account state.
@@ -77,8 +102,12 @@ type Execution interface {
 	GetAccount(ctx context.Context) (Account, error)
 	// GetPositions returns all currently open positions.
 	GetPositions(ctx context.Context) ([]Position, error)
+	// GetOpenOrders returns all orders that are pending or partially filled.
+	GetOpenOrders(ctx context.Context) ([]OpenOrder, error)
 	// PlaceOrder submits an order and returns the broker-assigned ID.
 	PlaceOrder(ctx context.Context, order strategy.Order) (OrderResult, error)
+	// CancelOrder cancels a pending order by broker-assigned ID.
+	CancelOrder(ctx context.Context, orderID string) error
 	// SubscribeFills streams fill and partial-fill events.
 	// Blocks until ctx is cancelled.
 	SubscribeFills(ctx context.Context, handler func(Fill)) error

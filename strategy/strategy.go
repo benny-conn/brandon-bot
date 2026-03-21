@@ -18,9 +18,12 @@ type Order struct {
 	Symbol     string
 	Side       string  // "buy" or "sell"
 	Qty        float64
-	OrderType  string  // "market" or "limit"
-	LimitPrice float64
-	Reason     string // for logging/debugging
+	OrderType  string  // "market", "limit", "stop", or "stop_limit"
+	LimitPrice float64 // limit price for limit and stop-limit orders
+	StopPrice  float64 // trigger price for stop and stop-limit orders
+	StopLoss   float64 // broker-native bracket stop loss price (0 = disabled)
+	TakeProfit float64 // broker-native bracket take profit price (0 = disabled)
+	Reason     string  // for logging/debugging
 }
 
 // Fill is the result of an executed order.
@@ -86,4 +89,22 @@ type Strategy interface {
 // OnTick is still called for bar events — implement it as a no-op if not needed.
 type TradeSubscriber interface {
 	OnTrade(trade Trade, portfolio Portfolio) []Order
+}
+
+// Quote represents a real-time bid/ask update from the exchange.
+type Quote struct {
+	Symbol    string
+	Timestamp time.Time
+	BidPrice  float64
+	BidSize   float64
+	AskPrice  float64
+	AskSize   float64
+}
+
+// QuoteSubscriber is an optional interface a strategy can implement to receive
+// real-time bid/ask quote updates. If implemented, the engine subscribes to the
+// quote stream for the requested symbols in addition to bars.
+// Useful for spread-aware entry logic and limit order placement.
+type QuoteSubscriber interface {
+	OnQuote(quote Quote, portfolio Portfolio) []Order
 }
