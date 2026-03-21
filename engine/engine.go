@@ -34,10 +34,12 @@ type engineEvent interface{ isEvent() }
 type tickEvent struct{ tick strategy.Tick }
 type tradeEvent struct{ trade strategy.Trade }
 type fillEvent struct{ fill strategy.Fill }
+type quoteEvent struct{ quote strategy.Quote }
 
 func (tickEvent) isEvent()  {}
 func (tradeEvent) isEvent() {}
 func (fillEvent) isEvent()  {}
+func (quoteEvent) isEvent() {}
 
 // Engine is the paper trading engine. It streams live data from the provider,
 // calls the strategy on each event, submits returned orders, and processes
@@ -109,6 +111,25 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 		log.Printf("paper engine: trade-level subscription active for %v", symbols)
 	}
 
+	// If the strategy implements QuoteSubscriber, subscribe to bid/ask quotes.
+	if _, ok := e.strategy.(strategy.QuoteSubscriber); ok {
+		go func() {
+			if err := e.md.SubscribeQuotes(ctx, symbols, func(q provider.Quote) {
+				e.send(ctx, quoteEvent{quote: strategy.Quote{
+					Symbol:    q.Symbol,
+					Timestamp: q.Timestamp,
+					BidPrice:  q.BidPrice,
+					BidSize:   q.BidSize,
+					AskPrice:  q.AskPrice,
+					AskSize:   q.AskSize,
+				}})
+			}); err != nil && ctx.Err() == nil {
+				log.Printf("paper engine: quote subscription error: %v", err)
+			}
+		}()
+		log.Printf("paper engine: quote-level subscription active for %v", symbols)
+	}
+
 	go e.processLoop(ctx)
 
 	log.Printf("paper engine: connecting to bar stream | symbols=%v timeframe=%s", symbols, e.config.Timeframe)
@@ -143,6 +164,8 @@ func (e *Engine) processLoop(ctx context.Context) {
 				e.onTrade(v.trade)
 			case fillEvent:
 				e.onFill(v.fill)
+			case quoteEvent:
+				e.onQuote(v.quote)
 			}
 		}
 	}
@@ -157,6 +180,11 @@ func (e *Engine) onTrade(trade strategy.Trade) {
 	e.portfolio.UpdateMarketPrice(trade.Symbol, trade.Price)
 	ts := e.strategy.(strategy.TradeSubscriber) // safe: only called when strategy implements it
 	e.submitOrders(ts.OnTrade(trade, e.portfolio))
+}
+
+func (e *Engine) onQuote(quote strategy.Quote) {
+	qs := e.strategy.(strategy.QuoteSubscriber) // safe: only called when strategy implements it
+	e.submitOrders(qs.OnQuote(quote, e.portfolio))
 }
 
 func (e *Engine) onFill(fill strategy.Fill) {

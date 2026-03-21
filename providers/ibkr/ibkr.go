@@ -352,6 +352,82 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 	return provider.OrderResult{ID: fmt.Sprintf("%d", orderID)}, nil
 }
 
+func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handler func(provider.Quote)) error {
+	t, err := p.conn()
+	if err != nil {
+		return err
+	}
+
+	for _, sym := range symbols {
+		reqID := t.nextReqID()
+		s := sym
+
+		t.mu.Lock()
+		t.quoteHandlers[reqID] = func(q provider.Quote) {
+			q.Symbol = s
+			handler(q)
+		}
+		t.quoteStates[reqID] = &ibkrQuoteState{}
+		t.mu.Unlock()
+
+		// Empty genericTickList = default ticks (includes bid/ask price and size).
+		t.ic.ReqMktData(reqID, stockContract(s), "", false, false, nil)
+		log.Printf("ibkr: subscribed to quotes for %s (reqID=%d)", s, reqID)
+	}
+
+	<-ctx.Done()
+	return nil
+}
+
+func (p *Provider) CancelOrder(ctx context.Context, orderID string) error {
+	t, err := p.conn()
+	if err != nil {
+		return err
+	}
+	id, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("ibkr: invalid order ID %q: %w", orderID, err)
+	}
+	t.ic.CancelOrder(id)
+	return nil
+}
+
+func (p *Provider) GetOpenOrders(ctx context.Context) ([]provider.OpenOrder, error) {
+	t, err := p.conn()
+	if err != nil {
+		return nil, err
+	}
+
+	ordersCh := make(chan provider.OpenOrder, 100)
+	done := make(chan struct{})
+
+	t.openOrdersMu.Lock()
+	t.openOrdersCh = ordersCh
+	t.openOrdersDone = done
+	t.openOrdersMu.Unlock()
+
+	defer func() {
+		t.openOrdersMu.Lock()
+		t.openOrdersCh = nil
+		t.openOrdersDone = nil
+		t.openOrdersMu.Unlock()
+	}()
+
+	t.ic.ReqOpenOrders()
+
+	var orders []provider.OpenOrder
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case o := <-ordersCh:
+			orders = append(orders, o)
+		case <-done:
+			return orders, nil
+		}
+	}
+}
+
 // SubscribeFills registers the fill handler and requests any executions from
 // today to catch fills that occurred before startup.
 func (p *Provider) SubscribeFills(ctx context.Context, handler func(provider.Fill)) error {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -595,6 +596,158 @@ func (p *Provider) SubscribeFills(ctx context.Context, handler func(provider.Fil
 			}
 		}
 	}
+}
+
+func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handler func(provider.Quote)) error {
+	if err := p.ensureConnected(ctx); err != nil {
+		return err
+	}
+	_, mdToken := p.auth.tokens()
+	conn, err := dialTradovate(ctx, p.mdWS, mdToken)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	contractToSym := make(map[int64]string)
+
+	for _, sym := range symbols {
+		ch, reqID, err := conn.Send(ctx, "md/subscribequote", map[string]string{"symbol": sym})
+		if err != nil {
+			return fmt.Errorf("tradovate subscribeQuotes %s: %w", sym, err)
+		}
+		select {
+		case f := <-ch:
+			conn.removeHandler(reqID)
+			if f.Status != 200 {
+				return fmt.Errorf("tradovate subscribeQuotes %s: status %d", sym, f.Status)
+			}
+			var d struct {
+				Subscriptions []struct {
+					ID int64 `json:"id"`
+				} `json:"subscriptions"`
+			}
+			if err := json.Unmarshal(f.Data, &d); err == nil && len(d.Subscriptions) > 0 {
+				contractToSym[d.Subscriptions[0].ID] = sym
+			}
+		case <-ctx.Done():
+			return nil
+		case <-time.After(10 * time.Second):
+			return fmt.Errorf("tradovate subscribeQuotes %s: timeout", sym)
+		}
+	}
+
+	log.Printf("tradovate: subscribed to quotes for %v", symbols)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case frame := <-conn.EventCh:
+			var payload struct {
+				Quotes []struct {
+					ContractID int64 `json:"contractId"`
+					Entries    struct {
+						Bid struct {
+							Price float64 `json:"price"`
+							Size  float64 `json:"size"`
+						} `json:"Bid"`
+						Ask struct {
+							Price float64 `json:"price"`
+							Size  float64 `json:"size"`
+						} `json:"Ask"`
+					} `json:"entries"`
+				} `json:"quotes"`
+			}
+			if err := json.Unmarshal(frame.Data, &payload); err != nil {
+				continue
+			}
+			for _, q := range payload.Quotes {
+				sym, ok := contractToSym[q.ContractID]
+				if !ok {
+					continue
+				}
+				if q.Entries.Bid.Price == 0 && q.Entries.Ask.Price == 0 {
+					continue
+				}
+				handler(provider.Quote{
+					Symbol:    sym,
+					Timestamp: time.Now().UTC(),
+					BidPrice:  q.Entries.Bid.Price,
+					BidSize:   q.Entries.Bid.Size,
+					AskPrice:  q.Entries.Ask.Price,
+					AskSize:   q.Entries.Ask.Size,
+				})
+			}
+		}
+	}
+}
+
+func (p *Provider) CancelOrder(ctx context.Context, orderID string) error {
+	if err := p.ensureConnected(ctx); err != nil {
+		return err
+	}
+	accessToken, _ := p.auth.tokens()
+	conn, err := dialTradovate(ctx, p.apiWS, accessToken)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	id, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("tradovate: invalid order ID %q: %w", orderID, err)
+	}
+	return conn.Request(ctx, "order/cancelorder", map[string]any{"orderId": id}, nil)
+}
+
+func (p *Provider) GetOpenOrders(ctx context.Context) ([]provider.OpenOrder, error) {
+	if err := p.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
+	accessToken, _ := p.auth.tokens()
+	conn, err := dialTradovate(ctx, p.apiWS, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	var raw []struct {
+		ID         int64   `json:"id"`
+		ContractID int64   `json:"contractId"`
+		Action     string  `json:"action"`
+		OrdStatus  string  `json:"ordStatus"`
+		OrdType    string  `json:"ordType"`
+		PriceLimit float64 `json:"price"`
+		PriceStop  float64 `json:"stopPrice"`
+		OrderQty   float64 `json:"orderQty"`
+		CumQty     float64 `json:"cumQty"`
+	}
+	if err := conn.Request(ctx, "order/list", nil, &raw); err != nil {
+		return nil, fmt.Errorf("tradovate order/list: %w", err)
+	}
+
+	var orders []provider.OpenOrder
+	for _, r := range raw {
+		if r.OrdStatus != "Working" && r.OrdStatus != "PendingNew" {
+			continue
+		}
+		sym := p.symbolFromID(r.ContractID)
+		if sym == "" {
+			sym = fmt.Sprintf("CONTRACT_%d", r.ContractID)
+		}
+		orders = append(orders, provider.OpenOrder{
+			ID:         fmt.Sprintf("%d", r.ID),
+			Symbol:     sym,
+			Side:       strings.ToLower(r.Action),
+			Qty:        r.OrderQty,
+			Filled:     r.CumQty,
+			OrderType:  strings.ToLower(r.OrdType),
+			LimitPrice: r.PriceLimit,
+			StopPrice:  r.PriceStop,
+		})
+	}
+	return orders, nil
 }
 
 // — contract cache helpers —

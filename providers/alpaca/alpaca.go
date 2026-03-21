@@ -250,6 +250,66 @@ func (p *Provider) SubscribeFills(ctx context.Context, handler func(provider.Fil
 	return nil
 }
 
+func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handler func(provider.Quote)) error {
+	sc := stream.NewStocksClient(
+		p.feed,
+		stream.WithCredentials(p.apiKey, p.secret),
+		stream.WithQuotes(func(q stream.Quote) {
+			handler(provider.Quote{
+				Symbol:    q.Symbol,
+				Timestamp: q.Timestamp,
+				BidPrice:  q.BidPrice,
+				BidSize:   float64(q.BidSize),
+				AskPrice:  q.AskPrice,
+				AskSize:   float64(q.AskSize),
+			})
+		}, symbols...),
+	)
+	if err := sc.Connect(ctx); err != nil {
+		return fmt.Errorf("alpaca quote stream connect: %w", err)
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func (p *Provider) CancelOrder(ctx context.Context, orderID string) error {
+	if err := p.trading.CancelOrder(orderID); err != nil {
+		return fmt.Errorf("alpaca cancel order %s: %w", orderID, err)
+	}
+	return nil
+}
+
+func (p *Provider) GetOpenOrders(ctx context.Context) ([]provider.OpenOrder, error) {
+	orders, err := p.trading.GetOrders(alp.GetOrdersRequest{Status: "open"})
+	if err != nil {
+		return nil, fmt.Errorf("alpaca get open orders: %w", err)
+	}
+	result := make([]provider.OpenOrder, len(orders))
+	for i, o := range orders {
+		var qty, limitPrice, stopPrice float64
+		if o.Qty != nil {
+			qty = o.Qty.InexactFloat64()
+		}
+		if o.LimitPrice != nil {
+			limitPrice = o.LimitPrice.InexactFloat64()
+		}
+		if o.StopPrice != nil {
+			stopPrice = o.StopPrice.InexactFloat64()
+		}
+		result[i] = provider.OpenOrder{
+			ID:         o.ID,
+			Symbol:     o.Symbol,
+			Side:       string(o.Side),
+			Qty:        qty,
+			Filled:     o.FilledQty.InexactFloat64(),
+			OrderType:  string(o.Type),
+			LimitPrice: limitPrice,
+			StopPrice:  stopPrice,
+		}
+	}
+	return result, nil
+}
+
 func parseTimeFrame(tf string) (marketdata.TimeFrame, error) {
 	switch tf {
 	case "1m":
