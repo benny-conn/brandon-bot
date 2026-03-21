@@ -15,6 +15,7 @@ import (
 	"brandon-bot/internal/provider"
 	alpacaprovider "brandon-bot/internal/provider/alpaca"
 	ibkrprovider "brandon-bot/internal/provider/ibkr"
+	tradovateprovider "brandon-bot/internal/provider/tradovate"
 	"brandon-bot/internal/strategy"
 )
 
@@ -24,7 +25,7 @@ func main() {
 	capitalFlag  := flag.Float64("capital", 10000, "starting capital in USD")
 	timeframeFlag := flag.String("timeframe", "1m", "bar timeframe: 1s, 1m, 5m, 15m, 1h, 1d")
 	feedFlag     := flag.String("feed", "iex", "Alpaca feed: iex or sip (ignored for IBKR)")
-	providerFlag := flag.String("provider", "alpaca", "data + execution provider: alpaca or ibkr")
+	providerFlag := flag.String("provider", "alpaca", "data + execution provider: alpaca, ibkr, or tradovate")
 	flag.Parse()
 
 	symbols := strings.Split(*symbolsFlag, ",")
@@ -53,8 +54,11 @@ func main() {
 	case "ibkr":
 		p := ibkrprovider.New()
 		md, exec = p, p
+	case "tradovate":
+		p := tradovateprovider.New()
+		md, exec = p, p
 	default:
-		log.Fatalf("unknown provider %q — use alpaca or ibkr", *providerFlag)
+		log.Fatalf("unknown provider %q — use alpaca, ibkr, or tradovate", *providerFlag)
 	}
 
 	cfg := paper.DefaultConfig(*capitalFlag, *timeframeFlag)

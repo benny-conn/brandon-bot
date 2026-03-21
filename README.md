@@ -2,7 +2,7 @@
 
 A paper trading backtester and live simulator in Go. Test a day trading strategy against historical data or run it live against a paper account without risking real money.
 
-Supports two providers: **Alpaca** (stocks/ETFs) and **Interactive Brokers** (stocks, futures, and more). Swap between them with a single flag.
+Supports three providers: **Alpaca** (stocks/ETFs), **Interactive Brokers** (stocks, futures, and more), and **Tradovate** (futures). Swap between them with a single flag.
 
 ---
 
@@ -11,6 +11,7 @@ Supports two providers: **Alpaca** (stocks/ETFs) and **Interactive Brokers** (st
 - Go 1.22+
 - An [Alpaca Markets](https://alpaca.markets) account (free) — for backtesting and Alpaca paper trading
 - An [Interactive Brokers](https://www.interactivebrokers.com) account with paper trading enabled — for IBKR live paper trading
+- A [Tradovate](https://www.tradovate.com) account with API credentials — for Tradovate live paper trading
 - Environment variables set in your shell (see below)
 
 ## Environment Variables
@@ -29,6 +30,18 @@ IBKR_GATEWAY_URL=https://localhost:5055    # optional, this is the default
 ```
 
 IBKR also requires **IB Gateway** running locally before starting the bot — see [IBKR Setup](#ibkr-setup) below.
+
+**Tradovate** (required for `--provider=tradovate`):
+```bash
+TRADOVATE_USERNAME=your_username
+TRADOVATE_PASSWORD=your_password
+TRADOVATE_APP_ID=your_app_name         # registered in the Tradovate developer portal
+TRADOVATE_CID=your_client_id           # from API credentials
+TRADOVATE_SEC=your_api_secret          # from API credentials
+TRADOVATE_DEVICE_ID=some-stable-uuid   # generate once: uuidgen
+TRADOVATE_DEMO=true                    # "false" for live; defaults to demo for safety
+# TRADOVATE_APP_VERSION=1.0            # optional, defaults to 1.0
+```
 
 ---
 
@@ -111,6 +124,19 @@ go run cmd/paper/main.go \
   --capital=10000
 ```
 
+### Tradovate
+
+```bash
+go run cmd/paper/main.go \
+  --provider=tradovate \
+  --strategy=ma_crossover \
+  --symbols=ESZ4 \
+  --timeframe=1m \
+  --capital=50000
+```
+
+Note: Tradovate uses specific contract symbols (e.g. `ESZ4` for E-Mini S&P December 2024, `NQZ4` for E-Mini Nasdaq). Month codes: F=Jan G=Feb H=Mar J=Apr K=May M=Jun N=Jul Q=Aug U=Sep V=Oct X=Nov Z=Dec.
+
 **Flags:**
 
 | Flag           | Default        | Description                                                                               |
@@ -152,6 +178,26 @@ The bot sends a keep-alive ping to IB Gateway every 55 seconds to maintain the s
 
 ---
 
+## Tradovate Setup
+
+Tradovate requires API credentials from their developer portal. Unlike IBKR, no local gateway process is needed — the bot connects directly to Tradovate's cloud API.
+
+1. Sign up at [tradovate.com](https://www.tradovate.com) and open a **Sim (demo) account**
+2. Go to **Account → API Access** in the Tradovate platform to request API credentials
+3. You'll receive a `cid` (client ID) and `sec` (API secret) — set these as `TRADOVATE_CID` and `TRADOVATE_SEC`
+4. Generate a stable device ID once and store it: `uuidgen` (macOS/Linux)
+5. Set `TRADOVATE_DEMO=true` (or omit it — demo is the default)
+6. Run the bot with `--provider=tradovate`
+
+Tokens expire every 90 minutes; the bot renews them automatically every 85 minutes.
+
+**Tradovate vs IBKR for the target strategy:**
+- Tradovate is purpose-built for futures (ES, NQ, CL, etc.) with a clean modern API
+- WebSocket fills arrive natively via `user/syncrequest` — no polling needed
+- For sub-second bar data, use `--timeframe=1s` which maps to tick bars; or use `SubscribeTrades` for individual quote updates
+
+---
+
 ## Project Structure
 
 ```
@@ -164,9 +210,13 @@ brandon-bot/
 │   │   ├── provider.go           # MarketData + Execution interfaces and shared types
 │   │   ├── alpaca/
 │   │   │   └── alpaca.go         # Alpaca implementation (stocks/ETFs, iex/sip feeds)
-│   │   └── ibkr/
-│   │       ├── client.go         # IB Gateway HTTP + WebSocket client
-│   │       └── ibkr.go           # IBKR implementation (stocks, futures)
+│   │   ├── ibkr/
+│   │   │   ├── client.go         # IB Gateway HTTP + WebSocket client
+│   │   │   └── ibkr.go           # IBKR implementation (stocks, futures)
+│   │   └── tradovate/
+│   │       ├── auth.go           # Token acquisition and 85-minute renewal
+│   │       ├── ws.go             # Tradovate WebSocket framing + heartbeat
+│   │       └── tradovate.go      # Tradovate implementation (futures)
 │   ├── strategy/
 │   │   ├── strategy.go           # Core interfaces: Strategy, Portfolio, Tick, Order, Fill
 │   │   ├── ma_crossover.go       # Example: 9/21 EMA crossover strategy
