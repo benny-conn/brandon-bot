@@ -1,10 +1,11 @@
 module github.com/benny-conn/brandon-bot
 
-go 1.25.0
+go 1.26.1
 
 require (
 	github.com/alpacahq/alpaca-trade-api-go/v3 v3.9.1
 	github.com/coder/websocket v1.8.14
+	github.com/hadrianl/ibapi v0.0.0-20230925013244-4f647c0e9c16
 	github.com/shopspring/decimal v1.3.1
 	modernc.org/sqlite v1.47.0
 )
@@ -13,7 +14,6 @@ require (
 	cloud.google.com/go v0.118.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/hadrianl/ibapi v0.0.0-20230925013244-4f647c0e9c16 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
