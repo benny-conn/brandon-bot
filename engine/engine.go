@@ -5,11 +5,20 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/benny-conn/brandon-bot/internal/db"
 	"github.com/benny-conn/brandon-bot/internal/portfolio"
 	"github.com/benny-conn/brandon-bot/provider"
 	"github.com/benny-conn/brandon-bot/strategy"
 )
+
+// Store is the persistence interface used by the engine to log orders, fills,
+// and portfolio snapshots. The engine doesn't care whether the underlying
+// implementation targets SQLite, Postgres, or anything else — callers provide
+// their own implementation.
+type Store interface {
+	LogOrder(order strategy.Order, brokerOrderID string) error
+	LogFill(fill strategy.Fill) error
+	LogSnapshot(cash, equity, totalPL float64) error
+}
 
 // Config holds engine configuration.
 type Config struct {
@@ -49,7 +58,7 @@ type Engine struct {
 	portfolio *portfolio.SimulatedPortfolio
 	md        provider.MarketData
 	exec      provider.Execution
-	store     *db.Store
+	store     Store
 	config    Config
 	eventCh   chan engineEvent
 	ctx       context.Context // set in Run, used by submitOrders
@@ -57,7 +66,7 @@ type Engine struct {
 
 // NewEngine constructs a paper trading engine. md and exec may be the same
 // object (e.g. *alpaca.Provider) or separate implementations.
-func NewEngine(strat strategy.Strategy, md provider.MarketData, exec provider.Execution, store *db.Store, cfg Config) *Engine {
+func NewEngine(strat strategy.Strategy, md provider.MarketData, exec provider.Execution, store Store, cfg Config) *Engine {
 	return &Engine{
 		strategy:  strat,
 		portfolio: portfolio.NewSimulatedPortfolio(cfg.Capital),
@@ -193,10 +202,10 @@ func (e *Engine) onFill(fill strategy.Fill) {
 
 	log.Printf("fill: %s %s qty=%.2f @ $%.2f", fill.Side, fill.Symbol, fill.Qty, fill.Price)
 
-	if err := e.store.LogPaperFill(fill); err != nil {
+	if err := e.store.LogFill(fill); err != nil {
 		log.Printf("db: could not log fill: %v", err)
 	}
-	if err := e.store.LogPaperSnapshot(e.portfolio.Cash(), e.portfolio.Equity(), e.portfolio.TotalPL()); err != nil {
+	if err := e.store.LogSnapshot(e.portfolio.Cash(), e.portfolio.Equity(), e.portfolio.TotalPL()); err != nil {
 		log.Printf("db: could not log snapshot: %v", err)
 	}
 }
@@ -211,7 +220,7 @@ func (e *Engine) submitOrders(orders []strategy.Order) {
 		log.Printf("order placed: %s %s qty=%.2f reason=%q id=%s",
 			order.Side, order.Symbol, order.Qty, order.Reason, result.ID)
 
-		if err := e.store.LogPaperOrder(order, result.ID); err != nil {
+		if err := e.store.LogOrder(order, result.ID); err != nil {
 			log.Printf("db: could not log order: %v", err)
 		}
 	}

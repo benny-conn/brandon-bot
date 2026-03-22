@@ -179,6 +179,21 @@ func (s *Store) SaveBacktestRun(params BacktestRunParams, results *backtest.Resu
 	return runID, tx.Commit()
 }
 
+// LogOrder implements engine.Store — records a submitted order.
+func (s *Store) LogOrder(order strategy.Order, brokerOrderID string) error {
+	return s.LogPaperOrder(order, brokerOrderID)
+}
+
+// LogFill implements engine.Store — records a fill event.
+func (s *Store) LogFill(fill strategy.Fill) error {
+	return s.LogPaperFill(fill)
+}
+
+// LogSnapshot implements engine.Store — records a portfolio snapshot.
+func (s *Store) LogSnapshot(cash, equity, totalPL float64) error {
+	return s.LogPaperSnapshot(cash, equity, totalPL)
+}
+
 // LogPaperOrder records a submitted order to paper_orders.
 func (s *Store) LogPaperOrder(order strategy.Order, alpacaOrderID string) error {
 	_, err := s.db.Exec(`
