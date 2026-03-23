@@ -9,7 +9,6 @@ package massive
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"time"
@@ -251,7 +250,7 @@ func (p *Provider) SubscribeBars(ctx context.Context, symbols []string, timefram
 		case <-ctx.Done():
 			return nil
 		case err := <-c.Error():
-			log.Printf("massive: bar stream error: %v", err)
+			return fmt.Errorf("massive: bar stream error: %w", err)
 		case out, ok := <-c.Output():
 			if !ok {
 				return nil
@@ -293,7 +292,7 @@ func (p *Provider) SubscribeTrades(ctx context.Context, symbols []string, handle
 		case <-ctx.Done():
 			return nil
 		case err := <-c.Error():
-			log.Printf("massive: trade stream error: %v", err)
+			return fmt.Errorf("massive: trade stream error: %w", err)
 		case out, ok := <-c.Output():
 			if !ok {
 				return nil
@@ -332,7 +331,7 @@ func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handle
 		case <-ctx.Done():
 			return nil
 		case err := <-c.Error():
-			log.Printf("massive: quote stream error: %v", err)
+			return fmt.Errorf("massive: quote stream error: %w", err)
 		case out, ok := <-c.Output():
 			if !ok {
 				return nil
