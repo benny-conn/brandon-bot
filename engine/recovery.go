@@ -57,10 +57,28 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 		e.portfolio.Cash(), e.portfolio.Equity(), len(positions))
 
 	// Fetch enough recent bars to warm up the strategy's rolling indicators.
+	// If WarmupFrom is set (e.g. strategy creation date), warm up from that time
+	// but cap at MaxWarmupBars to avoid fetching years of data.
 	end := time.Now()
 	start := end.Add(-warmupWindow(e.config.Timeframe, e.config.WarmupBars))
 
-	log.Printf("recovery: fetching %d bars of %s history for warm-up...", e.config.WarmupBars, e.config.Timeframe)
+	if !e.config.WarmupFrom.IsZero() {
+		fromStart := e.config.WarmupFrom
+		maxBars := e.config.MaxWarmupBars
+		if maxBars <= 0 {
+			maxBars = 300
+		}
+		maxStart := end.Add(-warmupWindow(e.config.Timeframe, maxBars))
+		if fromStart.Before(maxStart) {
+			fromStart = maxStart
+		}
+		if fromStart.Before(start) {
+			start = fromStart
+		}
+		log.Printf("recovery: using WarmupFrom=%s (capped at %d bars)", e.config.WarmupFrom.Format("2006-01-02"), maxBars)
+	}
+
+	log.Printf("recovery: fetching %s history from %s for warm-up...", e.config.Timeframe, start.Format("2006-01-02"))
 
 	bars, err := e.md.FetchBarsMulti(ctx, symbols, e.config.Timeframe, start, end)
 	if err != nil {
@@ -68,11 +86,41 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 	} else {
 		log.Printf("recovery: replaying %d bars through strategy (simulating fills locally)...", len(bars))
 
+		// Check if the strategy supports daily session hooks.
+		dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
+		var currentDate string
+
 		for _, b := range bars {
 			tick := provider.BarToTick(b)
-			e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+			date := tick.Timestamp.Format("2006-01-02")
+
+			// Fire daily lifecycle hooks at day boundaries.
+			if hasDailyHooks && date != currentDate {
+				if currentDate != "" {
+					// End of previous day — fire OnMarketClose.
+					closeOrders := dsh.OnMarketClose(e.portfolio)
+					simulateFills(e.strategy, e.portfolio, closeOrders, tick)
+				}
+				currentDate = date
+				// Start of new day — fire OnMarketOpen.
+				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+				openOrders := dsh.OnMarketOpen(e.portfolio)
+				simulateFills(e.strategy, e.portfolio, openOrders, tick)
+			} else {
+				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+			}
+
 			orders := e.strategy.OnTick(tick, e.portfolio)
 			simulateFills(e.strategy, e.portfolio, orders, tick)
+		}
+
+		// Fire final OnMarketClose so strategy state is up to date.
+		if hasDailyHooks && currentDate != "" {
+			closeOrders := dsh.OnMarketClose(e.portfolio)
+			if len(bars) > 0 {
+				lastTick := provider.BarToTick(bars[len(bars)-1])
+				simulateFills(e.strategy, e.portfolio, closeOrders, lastTick)
+			}
 		}
 	}
 

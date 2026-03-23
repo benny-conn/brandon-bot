@@ -44,15 +44,18 @@ type Config struct {
 	Capital        float64
 	Timeframe      string
 	WarmupBars     int             // number of historical bars to replay on startup for indicator warm-up
+	MaxWarmupBars  int             // cap on warmup bars when using WarmupFrom (default 300)
+	WarmupFrom     time.Time       // if set, warm up from this time (e.g. strategy creation date); 0 = use WarmupBars only
 	ConfigJSON     []byte          // raw JSON config passed to Initializer.OnInit (nil if none)
 	MarketSchedule *MarketSchedule // market hours for DailySessionHandler; nil defaults to NYSE
 }
 
 func DefaultConfig(capital float64, timeframe string) Config {
 	return Config{
-		Capital:    capital,
-		Timeframe:  timeframe,
-		WarmupBars: 100,
+		Capital:       capital,
+		Timeframe:     timeframe,
+		WarmupBars:    100,
+		MaxWarmupBars: 300,
 	}
 }
 
