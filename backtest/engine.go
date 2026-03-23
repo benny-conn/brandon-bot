@@ -3,6 +3,7 @@ package backtest
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/benny-conn/brandon-bot/internal/portfolio"
 	"github.com/benny-conn/brandon-bot/strategy"
@@ -66,8 +67,64 @@ func NewEngine(strat strategy.Strategy, initialCapital float64) *Engine {
 	}
 }
 
+// fillOrders simulates fills for a set of orders at the given price and time.
+// Returns the trades generated.
+func (e *Engine) fillOrders(orders []strategy.Order, fillPrice float64, fillTime time.Time) []Trade {
+	var trades []Trade
+	for _, order := range orders {
+		var realizedPL float64
+		fillQty := order.Qty
+
+		if order.Side == "buy" {
+			pos := e.portfolio.Position(order.Symbol)
+			if pos != nil && pos.Qty < 0 {
+				shortQty := -pos.Qty
+				if fillQty > shortQty {
+					fillQty = shortQty
+				}
+				realizedPL = (pos.AvgCost - fillPrice) * fillQty
+			} else {
+				cost := fillQty * fillPrice
+				if cost > e.portfolio.Cash() {
+					continue
+				}
+			}
+		}
+
+		if order.Side == "sell" {
+			pos := e.portfolio.Position(order.Symbol)
+			if pos != nil && pos.Qty > 0 {
+				if fillQty > pos.Qty {
+					fillQty = pos.Qty
+				}
+				realizedPL = (fillPrice - pos.AvgCost) * fillQty
+			}
+		}
+
+		fill := strategy.Fill{
+			Symbol:    order.Symbol,
+			Side:      order.Side,
+			Qty:       fillQty,
+			Price:     fillPrice,
+			Timestamp: fillTime,
+		}
+
+		e.portfolio.ApplyFill(fill)
+		e.strategy.OnFill(fill)
+
+		trades = append(trades, Trade{Fill: fill, RealizedPL: realizedPL})
+	}
+	return trades
+}
+
+// tickDate returns the calendar date string (YYYY-MM-DD) for a tick timestamp.
+func tickDate(t time.Time) string {
+	return t.Format("2006-01-02")
+}
+
 // Run replays ticks chronologically, simulates fills at the next bar's open,
-// and returns full performance metrics.
+// and returns full performance metrics. If the strategy implements
+// DailySessionHandler, OnMarketOpen/OnMarketClose are called at day boundaries.
 func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	if len(ticks) == 0 {
 		return &Results{InitialCapital: e.portfolio.Cash()}
@@ -79,16 +136,44 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	// Used to simulate fills at next bar's open.
 	nextSameSymbol := precomputeNextSameSymbol(ticks)
 
+	// Check if the strategy supports daily session hooks.
+	dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
+
 	var (
 		trades      []Trade
 		equityCurve []float64
 		peakEquity  float64
 		maxDrawdown float64
+		currentDate string
 	)
 
 	for i, tick := range ticks {
 		// Keep market values current so Equity() is accurate.
 		e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+
+		// Detect day boundaries and fire lifecycle hooks.
+		if hasDailyHooks {
+			date := tickDate(tick.Timestamp)
+			if currentDate == "" {
+				// First tick — fire market open.
+				currentDate = date
+				openOrders := dsh.OnMarketOpen(e.portfolio)
+				if len(openOrders) > 0 {
+					trades = append(trades, e.fillOrders(openOrders, tick.Open, tick.Timestamp)...)
+				}
+			} else if date != currentDate {
+				// Day changed — fire market close for the previous day, then open for the new day.
+				closeOrders := dsh.OnMarketClose(e.portfolio)
+				if len(closeOrders) > 0 {
+					trades = append(trades, e.fillOrders(closeOrders, tick.Open, tick.Timestamp)...)
+				}
+				currentDate = date
+				openOrders := dsh.OnMarketOpen(e.portfolio)
+				if len(openOrders) > 0 {
+					trades = append(trades, e.fillOrders(openOrders, tick.Open, tick.Timestamp)...)
+				}
+			}
+		}
 
 		eq := e.portfolio.Equity()
 		equityCurve = append(equityCurve, eq)
@@ -117,55 +202,15 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		}
 		nextBar := ticks[nextIdx]
 
-		for _, order := range orders {
-			fillPrice := nextBar.Open
-			fillTime := nextBar.Timestamp
+		trades = append(trades, e.fillOrders(orders, nextBar.Open, nextBar.Timestamp)...)
+	}
 
-			var realizedPL float64
-			fillQty := order.Qty
-
-			if order.Side == "buy" {
-				pos := e.portfolio.Position(order.Symbol)
-				if pos != nil && pos.Qty < 0 {
-					// Covering a short position.
-					shortQty := -pos.Qty
-					if fillQty > shortQty {
-						fillQty = shortQty
-					}
-					realizedPL = (pos.AvgCost - fillPrice) * fillQty // short P&L
-				} else {
-					// Opening/adding to a long — check cash.
-					cost := fillQty * fillPrice
-					if cost > e.portfolio.Cash() {
-						continue
-					}
-				}
-			}
-
-			if order.Side == "sell" {
-				pos := e.portfolio.Position(order.Symbol)
-				if pos != nil && pos.Qty > 0 {
-					// Closing (or partially closing) a long position.
-					if fillQty > pos.Qty {
-						fillQty = pos.Qty
-					}
-					realizedPL = (fillPrice - pos.AvgCost) * fillQty
-				}
-				// pos == nil or pos.Qty <= 0 means opening/adding to a short — allowed.
-			}
-
-			fill := strategy.Fill{
-				Symbol:    order.Symbol,
-				Side:      order.Side,
-				Qty:       fillQty,
-				Price:     fillPrice,
-				Timestamp: fillTime,
-			}
-
-			e.portfolio.ApplyFill(fill)
-			e.strategy.OnFill(fill)
-
-			trades = append(trades, Trade{Fill: fill, RealizedPL: realizedPL})
+	// Fire final market close if the strategy uses daily hooks.
+	if hasDailyHooks && currentDate != "" {
+		closeOrders := dsh.OnMarketClose(e.portfolio)
+		if len(closeOrders) > 0 {
+			lastTick := ticks[len(ticks)-1]
+			trades = append(trades, e.fillOrders(closeOrders, lastTick.Close, lastTick.Timestamp)...)
 		}
 	}
 
