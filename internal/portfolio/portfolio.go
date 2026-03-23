@@ -89,12 +89,18 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 			}
 		}
 	case "sell":
-		p.cash += fill.Qty * fill.Price
-		if pos, exists := p.positions[fill.Symbol]; exists {
-			pos.Qty -= fill.Qty
-			if pos.Qty <= 0 {
-				delete(p.positions, fill.Symbol)
-			}
+		pos, exists := p.positions[fill.Symbol]
+		if !exists {
+			return // no position to sell — reject naked short
+		}
+		qty := fill.Qty
+		if qty > pos.Qty {
+			qty = pos.Qty // cap to owned shares
+		}
+		p.cash += qty * fill.Price
+		pos.Qty -= qty
+		if pos.Qty <= 0 {
+			delete(p.positions, fill.Symbol)
 		}
 	}
 }

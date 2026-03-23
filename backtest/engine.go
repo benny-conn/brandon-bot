@@ -129,18 +129,24 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 				}
 			}
 
-			// For sells, capture avg cost before the fill removes the position.
+			// For sells, verify position exists and cap qty to what we own.
 			var realizedPL float64
+			fillQty := order.Qty
 			if order.Side == "sell" {
-				if pos := e.portfolio.Position(order.Symbol); pos != nil {
-					realizedPL = (fillPrice - pos.AvgCost) * order.Qty
+				pos := e.portfolio.Position(order.Symbol)
+				if pos == nil {
+					continue // no position to sell
 				}
+				if fillQty > pos.Qty {
+					fillQty = pos.Qty
+				}
+				realizedPL = (fillPrice - pos.AvgCost) * fillQty
 			}
 
 			fill := strategy.Fill{
 				Symbol:    order.Symbol,
 				Side:      order.Side,
-				Qty:       order.Qty,
+				Qty:       fillQty,
 				Price:     fillPrice,
 				Timestamp: fillTime,
 			}
