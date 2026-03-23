@@ -67,11 +67,17 @@ func NewEngine(strat strategy.Strategy, initialCapital float64) *Engine {
 	}
 }
 
-// fillOrders simulates fills for a set of orders at the given price and time.
-// Returns the trades generated.
-func (e *Engine) fillOrders(orders []strategy.Order, fillPrice float64, fillTime time.Time) []Trade {
+// fillOrders simulates fills for a set of orders using per-symbol prices.
+// Each order fills at the price from symbolPrices for its symbol; orders
+// for symbols not in the map are skipped.
+func (e *Engine) fillOrders(orders []strategy.Order, symbolPrices map[string]float64, fillTime time.Time) []Trade {
 	var trades []Trade
 	for _, order := range orders {
+		fillPrice, ok := symbolPrices[order.Symbol]
+		if !ok || fillPrice <= 0 {
+			continue // no price data for this symbol at this point
+		}
+
 		var realizedPL float64
 		fillQty := order.Qty
 
@@ -139,6 +145,11 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	// Check if the strategy supports daily session hooks.
 	dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
 
+	// latestPrices tracks the most recent open/close per symbol, used for
+	// filling lifecycle hook orders at the correct per-symbol price.
+	latestOpen := make(map[string]float64)
+	latestClose := make(map[string]float64)
+
 	var (
 		trades      []Trade
 		equityCurve []float64
@@ -150,6 +161,8 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	for i, tick := range ticks {
 		// Keep market values current so Equity() is accurate.
 		e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+		latestOpen[tick.Symbol] = tick.Open
+		latestClose[tick.Symbol] = tick.Close
 
 		// Detect day boundaries and fire lifecycle hooks.
 		if hasDailyHooks {
@@ -159,18 +172,21 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 				currentDate = date
 				openOrders := dsh.OnMarketOpen(e.portfolio)
 				if len(openOrders) > 0 {
-					trades = append(trades, e.fillOrders(openOrders, tick.Open, tick.Timestamp)...)
+					trades = append(trades, e.fillOrders(openOrders, latestOpen, tick.Timestamp)...)
 				}
 			} else if date != currentDate {
-				// Day changed — fire market close for the previous day, then open for the new day.
+				// Day changed — fire market close for the previous day (fill at previous close),
+				// then open for the new day (fill at new day's open).
 				closeOrders := dsh.OnMarketClose(e.portfolio)
 				if len(closeOrders) > 0 {
-					trades = append(trades, e.fillOrders(closeOrders, tick.Open, tick.Timestamp)...)
+					trades = append(trades, e.fillOrders(closeOrders, latestClose, tick.Timestamp)...)
 				}
 				currentDate = date
+				// Update open price for the new day's first tick of this symbol.
+				latestOpen[tick.Symbol] = tick.Open
 				openOrders := dsh.OnMarketOpen(e.portfolio)
 				if len(openOrders) > 0 {
-					trades = append(trades, e.fillOrders(openOrders, tick.Open, tick.Timestamp)...)
+					trades = append(trades, e.fillOrders(openOrders, latestOpen, tick.Timestamp)...)
 				}
 			}
 		}
@@ -202,7 +218,9 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		}
 		nextBar := ticks[nextIdx]
 
-		trades = append(trades, e.fillOrders(orders, nextBar.Open, nextBar.Timestamp)...)
+		// OnTick orders fill at the next same-symbol bar's open.
+		tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
+		trades = append(trades, e.fillOrders(orders, tickPrices, nextBar.Timestamp)...)
 	}
 
 	// Fire final market close if the strategy uses daily hooks.
@@ -210,7 +228,7 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		closeOrders := dsh.OnMarketClose(e.portfolio)
 		if len(closeOrders) > 0 {
 			lastTick := ticks[len(ticks)-1]
-			trades = append(trades, e.fillOrders(closeOrders, lastTick.Close, lastTick.Timestamp)...)
+			trades = append(trades, e.fillOrders(closeOrders, latestClose, lastTick.Timestamp)...)
 		}
 	}
 
