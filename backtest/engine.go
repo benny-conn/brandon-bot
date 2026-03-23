@@ -159,36 +159,46 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	)
 
 	for i, tick := range ticks {
-		// Keep market values current so Equity() is accurate.
-		e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
-		latestOpen[tick.Symbol] = tick.Open
-		latestClose[tick.Symbol] = tick.Close
-
-		// Detect day boundaries and fire lifecycle hooks.
+		// Detect day boundaries BEFORE updating prices so that OnMarketClose
+		// fills use the previous day's close (not the new day's values).
 		if hasDailyHooks {
 			date := tickDate(tick.Timestamp)
 			if currentDate == "" {
-				// First tick — fire market open.
+				// First tick — update prices first, then fire market open.
 				currentDate = date
+				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+				latestOpen[tick.Symbol] = tick.Open
+				latestClose[tick.Symbol] = tick.Close
 				openOrders := dsh.OnMarketOpen(e.portfolio)
 				if len(openOrders) > 0 {
 					trades = append(trades, e.fillOrders(openOrders, latestOpen, tick.Timestamp)...)
 				}
 			} else if date != currentDate {
-				// Day changed — fire market close for the previous day (fill at previous close),
-				// then open for the new day (fill at new day's open).
+				// Day changed — fire market close using YESTERDAY's prices (still in latestClose).
 				closeOrders := dsh.OnMarketClose(e.portfolio)
 				if len(closeOrders) > 0 {
 					trades = append(trades, e.fillOrders(closeOrders, latestClose, tick.Timestamp)...)
 				}
+				// Now update to new day's prices.
 				currentDate = date
-				// Update open price for the new day's first tick of this symbol.
+				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
 				latestOpen[tick.Symbol] = tick.Open
+				latestClose[tick.Symbol] = tick.Close
 				openOrders := dsh.OnMarketOpen(e.portfolio)
 				if len(openOrders) > 0 {
 					trades = append(trades, e.fillOrders(openOrders, latestOpen, tick.Timestamp)...)
 				}
+			} else {
+				// Same day — just update prices.
+				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+				latestOpen[tick.Symbol] = tick.Open
+				latestClose[tick.Symbol] = tick.Close
 			}
+		} else {
+			// No daily hooks — just update prices.
+			e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+			latestOpen[tick.Symbol] = tick.Open
+			latestClose[tick.Symbol] = tick.Close
 		}
 
 		eq := e.portfolio.Equity()
