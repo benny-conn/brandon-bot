@@ -77,30 +77,48 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 	switch fill.Side {
 	case "buy":
 		p.cash -= fill.Qty * fill.Price
-		if pos, exists := p.positions[fill.Symbol]; exists {
-			totalCost := pos.Qty*pos.AvgCost + fill.Qty*fill.Price
-			pos.Qty += fill.Qty
-			pos.AvgCost = totalCost / pos.Qty
-		} else {
+		pos, exists := p.positions[fill.Symbol]
+		if !exists {
 			p.positions[fill.Symbol] = &strategy.Position{
 				Symbol:  fill.Symbol,
 				Qty:     fill.Qty,
 				AvgCost: fill.Price,
 			}
+		} else if pos.Qty < 0 {
+			// Covering a short position.
+			pos.Qty += fill.Qty
+			if pos.Qty == 0 {
+				delete(p.positions, fill.Symbol)
+			} else if pos.Qty > 0 {
+				// Buy exceeded short qty — flipped to long. Reset avg cost.
+				pos.AvgCost = fill.Price
+			}
+		} else {
+			// Adding to a long position.
+			totalCost := pos.Qty*pos.AvgCost + fill.Qty*fill.Price
+			pos.Qty += fill.Qty
+			pos.AvgCost = totalCost / pos.Qty
 		}
 	case "sell":
 		pos, exists := p.positions[fill.Symbol]
 		if !exists {
-			return // no position to sell — reject naked short
+			// Opening a new short position (negative qty).
+			p.cash += fill.Qty * fill.Price
+			p.positions[fill.Symbol] = &strategy.Position{
+				Symbol:  fill.Symbol,
+				Qty:     -fill.Qty,
+				AvgCost: fill.Price,
+			}
+			return
 		}
-		qty := fill.Qty
-		if qty > pos.Qty {
-			qty = pos.Qty // cap to owned shares
-		}
-		p.cash += qty * fill.Price
-		pos.Qty -= qty
-		if pos.Qty <= 0 {
+		wasLong := pos.Qty > 0
+		p.cash += fill.Qty * fill.Price
+		pos.Qty -= fill.Qty
+		if pos.Qty == 0 {
 			delete(p.positions, fill.Symbol)
+		} else if pos.Qty < 0 && wasLong {
+			// Sell exceeded long qty — flipped to short. Reset avg cost.
+			pos.AvgCost = fill.Price
 		}
 	}
 }
@@ -114,6 +132,12 @@ func (p *SimulatedPortfolio) UpdateMarketPrice(symbol string, price float64) {
 	if !exists {
 		return
 	}
-	pos.MarketValue = pos.Qty * price
-	pos.UnrealizedPL = (price - pos.AvgCost) * pos.Qty
+	if pos.Qty > 0 {
+		pos.MarketValue = pos.Qty * price
+		pos.UnrealizedPL = (price - pos.AvgCost) * pos.Qty
+	} else {
+		// Short position: market value is negative (liability), P&L inverted.
+		pos.MarketValue = pos.Qty * price // negative
+		pos.UnrealizedPL = (pos.AvgCost - price) * (-pos.Qty)
+	}
 }

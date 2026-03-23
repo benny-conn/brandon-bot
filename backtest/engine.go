@@ -121,26 +121,37 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 			fillPrice := nextBar.Open
 			fillTime := nextBar.Timestamp
 
-			// Basic cash check for buys.
+			var realizedPL float64
+			fillQty := order.Qty
+
 			if order.Side == "buy" {
-				cost := order.Qty * fillPrice
-				if cost > e.portfolio.Cash() {
-					continue
+				pos := e.portfolio.Position(order.Symbol)
+				if pos != nil && pos.Qty < 0 {
+					// Covering a short position.
+					shortQty := -pos.Qty
+					if fillQty > shortQty {
+						fillQty = shortQty
+					}
+					realizedPL = (pos.AvgCost - fillPrice) * fillQty // short P&L
+				} else {
+					// Opening/adding to a long — check cash.
+					cost := fillQty * fillPrice
+					if cost > e.portfolio.Cash() {
+						continue
+					}
 				}
 			}
 
-			// For sells, verify position exists and cap qty to what we own.
-			var realizedPL float64
-			fillQty := order.Qty
 			if order.Side == "sell" {
 				pos := e.portfolio.Position(order.Symbol)
-				if pos == nil {
-					continue // no position to sell
+				if pos != nil && pos.Qty > 0 {
+					// Closing (or partially closing) a long position.
+					if fillQty > pos.Qty {
+						fillQty = pos.Qty
+					}
+					realizedPL = (fillPrice - pos.AvgCost) * fillQty
 				}
-				if fillQty > pos.Qty {
-					fillQty = pos.Qty
-				}
-				realizedPL = (fillPrice - pos.AvgCost) * fillQty
+				// pos == nil or pos.Qty <= 0 means opening/adding to a short — allowed.
 			}
 
 			fill := strategy.Fill{
@@ -162,7 +173,7 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 
 	wins, losses := 0, 0
 	for _, t := range trades {
-		if t.Fill.Side == "sell" {
+		if t.RealizedPL != 0 {
 			if t.RealizedPL > 0 {
 				wins++
 			} else {
