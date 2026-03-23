@@ -42,10 +42,16 @@ type ScriptStrategy struct {
 	name          string
 	runtimeErrors []string
 	errorSeen     map[string]bool
+	dataGlobal    *dataGlobal // nil if no MarketData provider
 }
 
 // New creates a ScriptStrategy by compiling src in a Goja runtime.
-func New(name, src string, config map[string]string) (*ScriptStrategy, error) {
+func New(name, src string, config map[string]string, opts ...Option) (*ScriptStrategy, error) {
+	var options scriptOptions
+	for _, o := range opts {
+		o(&options)
+	}
+
 	vm := goja.New()
 
 	// Inject config object
@@ -156,6 +162,19 @@ func New(name, src string, config map[string]string) (*ScriptStrategy, error) {
 
 	vm.Set("http", httpObj)
 
+	// Inject technical analysis library
+	registerTA(vm)
+
+	// Inject ML library
+	registerML(vm)
+
+	// Inject data access library (if MarketData provider supplied)
+	var dg *dataGlobal
+	if options.marketData != nil {
+		dg = newDataGlobal(options.marketData)
+		registerData(vm, dg)
+	}
+
 	// Run the script
 	if _, err := vm.RunString(src); err != nil {
 		return nil, fmt.Errorf("script compile error: %w", err)
@@ -188,6 +207,7 @@ func New(name, src string, config map[string]string) (*ScriptStrategy, error) {
 		onExit:        extractOptional("onExit"),
 		name:          name,
 		errorSeen:     make(map[string]bool),
+		dataGlobal:    dg,
 	}, nil
 }
 
@@ -220,6 +240,10 @@ func (s *ScriptStrategy) trackError(msg string) {
 func (s *ScriptStrategy) OnTick(tick strategy.Tick, portfolio strategy.Portfolio) []strategy.Order {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.dataGlobal != nil {
+		s.dataGlobal.resetTickCount()
+	}
 
 	tickVal := s.vm.ToValue(map[string]interface{}{
 		"symbol":    tick.Symbol,
@@ -460,8 +484,38 @@ func (s *ScriptStrategy) parseOrders(val goja.Value) []strategy.Order {
 				o.Qty = float64(vt)
 			}
 		}
+		if v := getFloatField(m, "limitPrice"); v != 0 {
+			o.LimitPrice = v
+		}
+		if v := getFloatField(m, "stopPrice"); v != 0 {
+			o.StopPrice = v
+		}
+		if v := getFloatField(m, "stopLoss"); v != 0 {
+			o.StopLoss = v
+		}
+		if v := getFloatField(m, "takeProfit"); v != 0 {
+			o.TakeProfit = v
+		}
+		if v, ok := m["reason"].(string); ok {
+			o.Reason = v
+		}
 		orders = append(orders, o)
 	}
 
 	return orders
+}
+
+// getFloatField extracts a numeric field from a JS-exported map.
+func getFloatField(m map[string]interface{}, key string) float64 {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch vt := v.(type) {
+	case float64:
+		return vt
+	case int64:
+		return float64(vt)
+	}
+	return 0
 }

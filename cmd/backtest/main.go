@@ -32,21 +32,31 @@ func main() {
 	configFlag := flag.String("config", "", "path to JSON config file for the strategy")
 	flag.Parse()
 
-	if *fromFlag == "" || *toFlag == "" {
-		fmt.Fprintln(os.Stderr, "error: --from and --to are required (YYYY-MM-DD)")
-		os.Exit(1)
+	// Default date range based on timeframe when --from/--to are omitted.
+	var from, to time.Time
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+
+	if *toFlag == "" {
+		to = now.Add(24*time.Hour - time.Second)
+	} else {
+		var err error
+		to, err = time.Parse("2006-01-02", *toFlag)
+		if err != nil {
+			log.Fatalf("invalid --to date: %v", err)
+		}
+		to = to.Add(24*time.Hour - time.Second)
 	}
 
-	from, err := time.Parse("2006-01-02", *fromFlag)
-	if err != nil {
-		log.Fatalf("invalid --from date: %v", err)
+	if *fromFlag == "" {
+		dur := backtest.DefaultDuration(*timeframeFlag)
+		from = to.Add(-dur)
+	} else {
+		var err error
+		from, err = time.Parse("2006-01-02", *fromFlag)
+		if err != nil {
+			log.Fatalf("invalid --from date: %v", err)
+		}
 	}
-	to, err := time.Parse("2006-01-02", *toFlag)
-	if err != nil {
-		log.Fatalf("invalid --to date: %v", err)
-	}
-	// End of the to-day so we include all bars on that date.
-	to = to.Add(24*time.Hour - time.Second)
 
 	symbols := strings.Split(*symbolsFlag, ",")
 	for i, s := range symbols {
