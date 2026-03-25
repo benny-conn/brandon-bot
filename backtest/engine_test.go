@@ -197,6 +197,55 @@ func TestEngine_MultiSymbol(t *testing.T) {
 	}
 }
 
+func TestEngine_CrossSymbolOrders(t *testing.T) {
+	// Strategy sees an AAPL tick and returns an order for GOOG.
+	// This should fill at GOOG's next bar open, not be silently dropped.
+	callCount := 0
+	strat := &mockStrategy{
+		name: "cross_symbol",
+		onBar: func(_ string, tick strategy.Tick, p strategy.Portfolio) []strategy.Order {
+			callCount++
+			// On the first AAPL tick, buy GOOG.
+			if tick.Symbol == "AAPL" && callCount == 1 {
+				return []strategy.Order{{
+					Symbol: "GOOG", Side: "buy", Qty: 1, OrderType: "market",
+				}}
+			}
+			return nil
+		},
+	}
+
+	ticks := []strategy.Tick{
+		tick("AAPL", 1, 100, 100),
+		tick("GOOG", 1, 200, 200),
+		tick("AAPL", 2, 105, 105),
+		tick("GOOG", 2, 210, 210),
+	}
+
+	e := NewEngine(strat, 10000)
+	r := e.Run(ticks)
+
+	// Order for GOOG placed at AAPL tick 0 should fill at next GOOG tick (index 1) open (200).
+	if len(strat.fills) != 1 {
+		t.Fatalf("expected 1 fill for cross-symbol order, got %d", len(strat.fills))
+	}
+	if strat.fills[0].Symbol != "GOOG" {
+		t.Errorf("fill symbol = %q, want GOOG", strat.fills[0].Symbol)
+	}
+	if strat.fills[0].Price != 200 {
+		t.Errorf("fill price = %v, want 200 (GOOG next tick open)", strat.fills[0].Price)
+	}
+
+	// Cash: 10000 - 200 = 9800. GOOG position: 1 * 210 close = 210.
+	// Equity: 9800 + 210 = 10010.
+	if !approxEqual(r.FinalEquity, 10010, 0.01) {
+		t.Errorf("FinalEquity = %v, want 10010", r.FinalEquity)
+	}
+	if r.Diagnostics.OrdersRejected != 0 {
+		t.Errorf("OrdersRejected = %d, want 0; reasons: %v", r.Diagnostics.OrdersRejected, r.Diagnostics.RejectionReasons)
+	}
+}
+
 // --- Helper function tests ---
 
 func TestPrecomputeNextSameSymbol(t *testing.T) {

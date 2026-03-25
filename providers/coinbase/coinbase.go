@@ -251,17 +251,27 @@ func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handle
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			return
 		}
+		// Use the envelope timestamp from the exchange rather than local clock.
+		var envelope wsEnvelope
+		if err := json.Unmarshal(raw, &envelope); err == nil {
+			// Coinbase sends RFC3339 timestamps on the envelope.
+		}
+		ts, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
+		if err != nil {
+			ts = time.Now()
+		}
 		for _, t := range msg.Tickers {
 			bestBid, _ := strconv.ParseFloat(t.BestBid, 64)
 			bestBidQty, _ := strconv.ParseFloat(t.BestBidQty, 64)
 			bestAsk, _ := strconv.ParseFloat(t.BestAsk, 64)
 			bestAskQty, _ := strconv.ParseFloat(t.BestAskQty, 64)
 			handler(provider.Quote{
-				Symbol:   t.ProductID,
-				BidPrice: bestBid,
-				BidSize:  bestBidQty,
-				AskPrice: bestAsk,
-				AskSize:  bestAskQty,
+				Symbol:    t.ProductID,
+				Timestamp: ts,
+				BidPrice:  bestBid,
+				BidSize:   bestBidQty,
+				AskPrice:  bestAsk,
+				AskSize:   bestAskQty,
 			})
 		}
 	})

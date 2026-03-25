@@ -93,6 +93,7 @@ type Engine struct {
 	store     Store
 	config    Config
 	eventCh   chan engineEvent
+	fillCh    chan fillEvent // separate unbuffered channel — fills are never dropped
 	ctx       context.Context // set in Run, used by submitOrders
 
 	// Client-side stop order management for providers that don't support native stops.
@@ -124,6 +125,7 @@ func NewEngine(strat strategy.Strategy, md provider.MarketData, exec provider.Ex
 		store:           store,
 		config:          cfg,
 		eventCh:         make(chan engineEvent, 512),
+		fillCh:          make(chan fillEvent, 64), // buffered but never dropped
 		clientSideStops: clientStops,
 	}
 }
@@ -245,17 +247,21 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 		}()
 	}
 
-	// Fill events come in async — route through event channel so all strategy
-	// calls remain on the processLoop goroutine.
+	// Fill events use a dedicated channel that blocks instead of dropping,
+	// ensuring fills are never lost (portfolio state must stay in sync).
 	go func() {
 		if err := e.exec.SubscribeFills(ctx, func(f provider.Fill) {
-			e.send(ctx, fillEvent{fill: strategy.Fill{
+			ev := fillEvent{fill: strategy.Fill{
 				Symbol:    f.Symbol,
 				Side:      f.Side,
 				Qty:       f.Qty,
 				Price:     f.Price,
 				Timestamp: f.Timestamp,
-			}})
+			}}
+			select {
+			case e.fillCh <- ev:
+			case <-ctx.Done():
+			}
 		}); err != nil && ctx.Err() == nil {
 			log.Printf("paper engine: fill subscription error: %v", err)
 		}
@@ -352,17 +358,27 @@ func (e *Engine) send(ctx context.Context, ev engineEvent) {
 
 func (e *Engine) processLoop(ctx context.Context) {
 	for {
+		// Prioritize fills over other events to keep portfolio in sync.
 		select {
 		case <-ctx.Done():
 			return
+		case f := <-e.fillCh:
+			e.onFill(f.fill)
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case f := <-e.fillCh:
+			e.onFill(f.fill)
 		case ev := <-e.eventCh:
 			switch v := ev.(type) {
 			case tickEvent:
 				e.handleBar(e.baseTimeframe, v.tick)
 			case tradeEvent:
 				e.onTrade(v.trade)
-			case fillEvent:
-				e.onFill(v.fill)
 			case quoteEvent:
 				e.onQuote(v.quote)
 			case marketOpenEvent:

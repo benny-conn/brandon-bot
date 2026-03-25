@@ -37,6 +37,10 @@ type tws struct {
 	ic    *ibapi.IbClient
 	ready chan struct{} // closed when NextValidID fires (connection is ready)
 
+	// Connection state for reconnection.
+	host string
+	port int
+
 	reqSeq atomic.Int64
 	ordSeq atomic.Int64
 
@@ -59,11 +63,17 @@ type tws struct {
 	openOrdersMu   sync.Mutex
 	openOrdersCh   chan provider.OpenOrder
 	openOrdersDone chan struct{}
+
+	// Connection health monitoring.
+	connAlive   atomic.Bool
+	onReconnect func() // called after successful reconnection (nil = no-op)
 }
 
 func newTWS(host string, port int) (*tws, error) {
 	t := &tws{
 		ready:         make(chan struct{}),
+		host:          host,
+		port:          port,
 		histHandlers:  make(map[int64]func(provider.Bar)),
 		liveBars:      make(map[int64]func(provider.Bar)),
 		histDone:      make(map[int64]chan struct{}),
@@ -75,21 +85,69 @@ func newTWS(host string, port int) (*tws, error) {
 		orderChans:    make(map[int64]chan string),
 	}
 
-	ic := ibapi.NewIbClient(t)
-	if err := ic.Connect(host, port, 1); err != nil {
-		return nil, fmt.Errorf("TWS connect: %w", err)
+	if err := t.connect(); err != nil {
+		return nil, err
 	}
-	if err := ic.HandShake(); err != nil {
-		return nil, fmt.Errorf("TWS handshake: %w", err)
-	}
-	t.ic = ic
-	go func() { _ = ic.Run() }()
 
 	select {
 	case <-t.ready:
+		t.connAlive.Store(true)
 		return t, nil
 	case <-time.After(10 * time.Second):
 		return nil, fmt.Errorf("TWS: timed out waiting for NextValidID (is IB Gateway running and API enabled?)")
+	}
+}
+
+// connect establishes (or re-establishes) the IB Gateway connection.
+func (t *tws) connect() error {
+	ic := ibapi.NewIbClient(t)
+	if err := ic.Connect(t.host, t.port, 1); err != nil {
+		return fmt.Errorf("TWS connect: %w", err)
+	}
+	if err := ic.HandShake(); err != nil {
+		return fmt.Errorf("TWS handshake: %w", err)
+	}
+	t.ic = ic
+	go func() {
+		_ = ic.Run()
+		// Run returns when the connection drops — mark as dead.
+		t.connAlive.Store(false)
+		log.Printf("ibkr: connection lost, attempting reconnection...")
+		t.reconnectLoop()
+	}()
+	return nil
+}
+
+// reconnectLoop attempts to reconnect with exponential backoff.
+func (t *tws) reconnectLoop() {
+	delays := []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second}
+
+	for attempt := 0; ; attempt++ {
+		delay := delays[len(delays)-1]
+		if attempt < len(delays) {
+			delay = delays[attempt]
+		}
+		log.Printf("ibkr: reconnect attempt %d in %s...", attempt+1, delay)
+		time.Sleep(delay)
+
+		// Reset ready channel for new connection handshake.
+		t.ready = make(chan struct{})
+		if err := t.connect(); err != nil {
+			log.Printf("ibkr: reconnect attempt %d failed: %v", attempt+1, err)
+			continue
+		}
+
+		select {
+		case <-t.ready:
+			t.connAlive.Store(true)
+			log.Printf("ibkr: reconnected successfully after %d attempts", attempt+1)
+			if t.onReconnect != nil {
+				t.onReconnect()
+			}
+			return
+		case <-time.After(10 * time.Second):
+			log.Printf("ibkr: reconnect attempt %d timed out waiting for NextValidID", attempt+1)
+		}
 	}
 }
 
@@ -253,10 +311,21 @@ func (t *tws) ExecDetails(_ int64, contract *ibapi.Contract, exec *ibapi.Executi
 }
 
 func (t *tws) Error(reqID int64, errCode int64, errString string) {
-	if errCode >= 2000 {
-		log.Printf("ibkr info [%d]: %s", errCode, errString)
-	} else {
-		log.Printf("ibkr error [req=%d code=%d]: %s", reqID, errCode, errString)
+	// Codes 1100-1102 are connection status codes from TWS:
+	// 1100: Connectivity lost  1101: Connectivity restored (data lost)  1102: Connectivity restored (data maintained)
+	switch errCode {
+	case 1100:
+		t.connAlive.Store(false)
+		log.Printf("ibkr: connectivity lost — %s", errString)
+	case 1101, 1102:
+		t.connAlive.Store(true)
+		log.Printf("ibkr: connectivity restored — %s", errString)
+	default:
+		if errCode >= 2000 {
+			log.Printf("ibkr info [%d]: %s", errCode, errString)
+		} else {
+			log.Printf("ibkr error [req=%d code=%d]: %s", reqID, errCode, errString)
+		}
 	}
 }
 

@@ -334,7 +334,11 @@ func (s *ScriptStrategy) OnFill(fill strategy.Fill) {
 		"price":     fill.Price,
 		"timestamp": fill.Timestamp.UnixMilli(),
 	})
-	s.onFill(goja.Undefined(), fillVal)
+	if _, err := s.onFill(goja.Undefined(), fillVal); err != nil {
+		msg := fmt.Sprintf("script onFill error: %v", err)
+		fmt.Println(msg)
+		s.trackError(msg)
+	}
 }
 
 // ---------------------------------------------------------------------------

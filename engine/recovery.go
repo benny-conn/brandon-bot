@@ -81,9 +81,17 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 		dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
 		var currentDate string
 
+		// Use market-timezone-aware dates for session boundaries instead of UTC.
+		// This ensures futures (e.g. ES, MNQ) get correct day boundaries aligned
+		// with market hours rather than UTC midnight.
+		dateLoc := marketDateLocation(e.config.MarketSchedule)
+		dateOf := func(t time.Time) string {
+			return t.In(dateLoc).Format("2006-01-02")
+		}
+
 		for _, b := range bars {
 			tick := provider.BarToTick(b)
-			date := tick.Timestamp.UTC().Format("2006-01-02")
+			date := dateOf(tick.Timestamp)
 
 			// Fire daily lifecycle hooks at day boundaries.
 			if hasDailyHooks && date != currentDate {
@@ -179,6 +187,22 @@ func simulateFills(strat strategy.Strategy, port *portfolio.SimulatedPortfolio, 
 		strat.OnFill(fill)
 		log.Printf("recovery: simulated fill %s %s qty=%.2f @ $%.4f", fill.Side, fill.Symbol, fill.Qty, fill.Price)
 	}
+}
+
+// marketDateLocation returns the timezone location for determining trading day
+// boundaries. Uses the configured market schedule timezone, falling back to
+// America/New_York (NYSE default) and then UTC.
+func marketDateLocation(sched *MarketSchedule) *time.Location {
+	if sched != nil && sched.Timezone != "" {
+		if loc, err := time.LoadLocation(sched.Timezone); err == nil {
+			return loc
+		}
+	}
+	// Default to NYSE timezone.
+	if loc, err := time.LoadLocation("America/New_York"); err == nil {
+		return loc
+	}
+	return time.UTC
 }
 
 // warmupWindow returns how far back to fetch historical bars.

@@ -183,6 +183,47 @@ func (e *Engine) fillOrders(orders []strategy.Order, symbolPrices map[string]flo
 	return trades
 }
 
+// fillOrdersCross builds per-symbol fill prices from the next available tick for
+// each order's symbol, supporting cross-symbol orders (e.g. an AAPL tick's
+// strategy returning a MSFT order). Falls back to the current tick's next bar
+// for same-symbol orders (fast path).
+func (e *Engine) fillOrdersCross(orders []strategy.Order, tickIdx int, ticks []strategy.Tick, nextSameSymbol []int, symIdx symbolTickIndices) []Trade {
+	tickPrices := make(map[string]float64)
+	var fillTime time.Time
+
+	// Determine the fill price and time for each unique order symbol.
+	currentSym := ticks[tickIdx].Symbol
+	for _, o := range orders {
+		if _, ok := tickPrices[o.Symbol]; ok {
+			continue // already resolved
+		}
+		var nextIdx int
+		if o.Symbol == currentSym {
+			// Fast path: use precomputed next-same-symbol index.
+			nextIdx = nextSameSymbol[tickIdx]
+		} else {
+			// Cross-symbol: find next tick for this order's symbol after current tick.
+			nextIdx = symIdx.nextTickAfter(o.Symbol, tickIdx)
+		}
+		if nextIdx != -1 {
+			tickPrices[o.Symbol] = ticks[nextIdx].Open
+			if fillTime.IsZero() || ticks[nextIdx].Timestamp.After(fillTime) {
+				fillTime = ticks[nextIdx].Timestamp
+			}
+		}
+	}
+
+	if len(tickPrices) == 0 {
+		return nil
+	}
+	// Use earliest fill time if none resolved (shouldn't happen).
+	if fillTime.IsZero() {
+		fillTime = ticks[tickIdx].Timestamp
+	}
+
+	return e.fillOrders(orders, tickPrices, fillTime)
+}
+
 // dayPrices holds precomputed open/close prices for all symbols on a given day.
 type dayPrices struct {
 	date      string
@@ -253,6 +294,9 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	// Precompute: for each tick index, the index of the next tick for the same symbol.
 	// Used to simulate fills at next bar's open.
 	nextSameSymbol := precomputeNextSameSymbol(ticks)
+
+	// Per-symbol tick index for cross-symbol order fills.
+	symIndices := buildSymbolTickIndices(ticks)
 
 	// Check if the strategy supports daily session hooks.
 	dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
@@ -339,13 +383,7 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		// --- Ask the strategy what to do ---
 		orders := e.strategy.OnBar(baseTimeframe, tick, e.portfolio)
 		if len(orders) > 0 {
-			// Find next bar for fill simulation.
-			nextIdx := nextSameSymbol[i]
-			if nextIdx != -1 {
-				nextBar := ticks[nextIdx]
-				tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
-				trades = append(trades, e.fillOrders(orders, tickPrices, nextBar.Timestamp)...)
-			}
+			trades = append(trades, e.fillOrdersCross(orders, i, ticks, nextSameSymbol, symIndices)...)
 		}
 
 		// --- Feed through aggregators for higher-timeframe bars ---
@@ -356,12 +394,7 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 			for _, cb := range completedBars {
 				barOrders := e.strategy.OnBar(cb.timeframe, cb.tick, e.portfolio)
 				if len(barOrders) > 0 {
-					nextIdx := nextSameSymbol[i]
-					if nextIdx != -1 {
-						nextBar := ticks[nextIdx]
-						tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
-						trades = append(trades, e.fillOrders(barOrders, tickPrices, nextBar.Timestamp)...)
-					}
+					trades = append(trades, e.fillOrdersCross(barOrders, i, ticks, nextSameSymbol, symIndices)...)
 				}
 			}
 			completedBars = completedBars[:0]
@@ -428,6 +461,38 @@ func precomputeNextSameSymbol(ticks []strategy.Tick) []int {
 		lastSeen[sym] = i
 	}
 	return next
+}
+
+// symbolTickIndices maps each symbol to its sorted list of tick indices.
+// Used to find the next tick for any symbol at any point during replay.
+type symbolTickIndices map[string][]int
+
+func buildSymbolTickIndices(ticks []strategy.Tick) symbolTickIndices {
+	idx := make(symbolTickIndices)
+	for i, t := range ticks {
+		idx[t.Symbol] = append(idx[t.Symbol], i)
+	}
+	return idx
+}
+
+// nextTickAfter returns the index of the first tick for sym that comes after
+// position i, or -1 if none exists.
+func (s symbolTickIndices) nextTickAfter(sym string, i int) int {
+	indices := s[sym]
+	// Binary search for first index > i.
+	lo, hi := 0, len(indices)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if indices[mid] <= i {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < len(indices) {
+		return indices[lo]
+	}
+	return -1
 }
 
 // sharpe computes the per-bar Sharpe ratio from an equity curve (not annualized).
