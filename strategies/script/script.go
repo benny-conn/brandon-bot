@@ -291,7 +291,7 @@ func (s *ScriptStrategy) OnBar(timeframe string, tick strategy.Tick, portfolio s
 	defer s.mu.Unlock()
 
 	if s.dataGlobal != nil {
-		s.dataGlobal.resetTickCount()
+		s.dataGlobal.resetTick(tick.Timestamp)
 	}
 
 	tickVal := s.vm.ToValue(map[string]interface{}{

@@ -82,10 +82,13 @@ func WithLogSink(sink *LogSink) Option {
 }
 
 // historyCacheKey uniquely identifies a cached history request.
+// Includes the truncated end time so cache entries are invalidated when
+// the simulated bar time advances during backtesting.
 type historyCacheKey struct {
 	symbol    string
 	bars      int
 	timeframe string
+	endTime   int64 // Unix seconds, truncated to cache granularity
 }
 
 type historyCacheEntry struct {
@@ -100,6 +103,9 @@ type dataGlobal struct {
 	cache map[historyCacheKey]historyCacheEntry
 	// tickCallCount resets each tick; enforced by the strategy
 	tickCallCount int
+	// currentTime is the simulated bar timestamp, updated each tick.
+	// Used instead of time.Now() so data.history() works correctly during backtesting.
+	currentTime time.Time
 }
 
 func newDataGlobal(md provider.MarketData) *dataGlobal {
@@ -109,10 +115,12 @@ func newDataGlobal(md provider.MarketData) *dataGlobal {
 	}
 }
 
-// resetTickCount should be called at the start of each tick.
-func (d *dataGlobal) resetTickCount() {
+// resetTick should be called at the start of each tick to reset rate limits
+// and update the current simulated time for data.history() calls.
+func (d *dataGlobal) resetTick(barTime time.Time) {
 	d.mu.Lock()
 	d.tickCallCount = 0
+	d.currentTime = barTime
 	d.mu.Unlock()
 }
 
@@ -137,18 +145,41 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			panic(vm.NewGoError(fmt.Errorf("data.history: rate limit exceeded (%d calls per tick)", maxHistoryCallsPerTick)))
 		}
 
-		// Check cache
-		key := historyCacheKey{symbol: symbol, bars: bars, timeframe: timeframe}
+		// Use the current bar timestamp (set by resetTick) so data.history()
+		// returns data relative to the simulated time during backtesting.
+		// Falls back to time.Now() for live trading (before first tick).
+		end := dg.currentTime.UTC()
+		if end.IsZero() {
+			end = time.Now().UTC()
+		}
+
+		// Cache key includes truncated end time so backtest time advances
+		// invalidate stale entries. Truncation granularity depends on the
+		// requested timeframe to balance accuracy vs API call volume.
+		var cacheGranularity time.Duration
+		switch timeframe {
+		case "1s", "3s":
+			cacheGranularity = 30 * time.Second
+		case "1m":
+			cacheGranularity = time.Minute
+		case "5m":
+			cacheGranularity = 5 * time.Minute
+		default:
+			cacheGranularity = 5 * time.Minute
+		}
+		truncatedEnd := end.Truncate(cacheGranularity)
+		key := historyCacheKey{symbol: symbol, bars: bars, timeframe: timeframe, endTime: truncatedEnd.Unix()}
 		if entry, ok := dg.cache[key]; ok && time.Since(entry.fetchedAt) < historyCacheTTL {
 			dg.mu.Unlock()
 			return vm.ToValue(entry.data)
 		}
 		dg.mu.Unlock()
-
-		// Compute time range: go far enough back to get `bars` bars.
-		end := time.Now().UTC()
 		var start time.Time
 		switch timeframe {
+		case "1s":
+			start = end.Add(-time.Duration(bars*2) * time.Second)
+		case "3s":
+			start = end.Add(-time.Duration(bars*6) * time.Second)
 		case "1m":
 			start = end.Add(-time.Duration(bars*2) * time.Minute)
 		case "5m":
@@ -162,7 +193,7 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 		case "1d":
 			start = end.Add(-time.Duration(bars*2) * 24 * time.Hour)
 		default:
-			start = end.Add(-time.Duration(bars*2) * 24 * time.Hour)
+			start = end.Add(-time.Duration(bars*2) * time.Minute) // conservative default
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), historyTimeout)
