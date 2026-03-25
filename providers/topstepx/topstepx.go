@@ -504,13 +504,18 @@ func (p *Provider) SubscribeBars(ctx context.Context, symbols []string, timefram
 			return nil
 
 		case <-ticker.C:
+			// Use the bar interval's aligned start time rather than the last quote
+			// timestamp, which may be stale if no trades occurred in this interval.
+			barTime := time.Now().UTC().Truncate(interval)
 			for sym, bs := range barStates {
 				if !bs.hasData {
 					continue
 				}
+				// Prefer the exchange timestamp if recent (within 2x the interval),
+				// otherwise use the aligned bar time.
 				ts := quoteStates[sym].timestamp
-				if ts.IsZero() {
-					ts = time.Now().UTC()
+				if ts.IsZero() || time.Since(ts) > 2*interval {
+					ts = barTime
 				}
 				handler(provider.Bar{
 					Symbol:    sym,
@@ -693,6 +698,12 @@ func (p *Provider) SubscribeQuotes(ctx context.Context, symbols []string, handle
 
 			qs := states[sym]
 			qs.merge(&quote)
+
+			// Only emit once we have a complete state (bid and ask both populated).
+			// Early deltas may only contain partial data.
+			if qs.bestBid == 0 || qs.bestAsk == 0 {
+				continue
+			}
 
 			handler(provider.Quote{
 				Symbol:    sym,

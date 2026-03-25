@@ -13,10 +13,12 @@ import (
 const (
 	maxHistoryCallsPerTick = 10
 	historyCacheTTL        = 5 * time.Minute
-	historyTimeout         = 30 * time.Second
+	historyTimeout         = 5 * time.Second
 	fetchRetries           = 2
 	fetchRetryBaseDelay    = 500 * time.Millisecond
 	fetchErrorCooldown     = 10 * time.Second // suppress retries after an error
+	maxCacheEntries        = 500              // cap to prevent unbounded memory growth
+	cacheEvictInterval     = 50               // evict stale entries every N cache writes
 )
 
 // Option configures optional features of a ScriptStrategy.
@@ -106,6 +108,8 @@ type dataGlobal struct {
 	cache map[historyCacheKey]historyCacheEntry
 	// tickCallCount resets each tick; enforced by the strategy
 	tickCallCount int
+	// cacheWrites counts cache insertions to trigger periodic eviction.
+	cacheWrites int
 	// currentTime is the simulated bar timestamp, updated each tick.
 	// Used instead of time.Now() so data.history() works correctly during backtesting.
 	currentTime time.Time
@@ -182,6 +186,10 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			cacheGranularity = 30 * time.Minute
 		case "30m":
 			cacheGranularity = 30 * time.Minute
+		case "1h":
+			cacheGranularity = 2 * time.Hour
+		case "1d":
+			cacheGranularity = 24 * time.Hour
 		default:
 			cacheGranularity = 15 * time.Minute
 		}
@@ -267,9 +275,30 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			}
 		}
 
-		// Cache
+		// Cache with periodic eviction to bound memory usage.
 		dg.mu.Lock()
 		dg.cache[key] = historyCacheEntry{data: result, fetchedAt: time.Now()}
+		dg.cacheWrites++
+		if dg.cacheWrites%cacheEvictInterval == 0 || len(dg.cache) > maxCacheEntries {
+			now := time.Now()
+			for k, v := range dg.cache {
+				if now.Sub(v.fetchedAt) > historyCacheTTL {
+					delete(dg.cache, k)
+				}
+			}
+			// If still over limit after TTL eviction, drop oldest entries.
+			for len(dg.cache) > maxCacheEntries {
+				var oldestKey historyCacheKey
+				var oldestTime time.Time
+				for k, v := range dg.cache {
+					if oldestTime.IsZero() || v.fetchedAt.Before(oldestTime) {
+						oldestKey = k
+						oldestTime = v.fetchedAt
+					}
+				}
+				delete(dg.cache, oldestKey)
+			}
+		}
 		dg.mu.Unlock()
 
 		return vm.ToValue(result)

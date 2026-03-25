@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/benny-conn/brandon-bot/strategy"
@@ -158,6 +159,8 @@ type ContractSpecProvider interface {
 }
 
 // BarToTick converts a provider Bar to a strategy Tick.
+// Volume is rounded (not truncated) to preserve fractional volumes from
+// providers that report non-integer volumes (e.g. crypto exchanges).
 func BarToTick(b Bar) strategy.Tick {
 	return strategy.Tick{
 		Symbol:    b.Symbol,
@@ -166,6 +169,6 @@ func BarToTick(b Bar) strategy.Tick {
 		High:      b.High,
 		Low:       b.Low,
 		Close:     b.Close,
-		Volume:    int64(b.Volume),
+		Volume:    int64(math.Round(b.Volume)),
 	}
 }

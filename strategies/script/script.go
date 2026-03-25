@@ -267,13 +267,13 @@ func (s *ScriptStrategy) Timeframes() []string {
 		msg := fmt.Sprintf("script timeframes() error: %v", err)
 		fmt.Println(msg)
 		s.trackError(msg)
-		return nil
+		return []string{"1m"}
 	}
 
 	exported := result.Export()
 	arr, ok := exported.([]interface{})
 	if !ok {
-		return nil
+		return []string{"1m"}
 	}
 	timeframes := make([]string, 0, len(arr))
 	for _, v := range arr {

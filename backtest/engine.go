@@ -353,14 +353,14 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		// --- Day boundary handling for strategies with lifecycle hooks ---
 		if hasDailyHooks && date != currentDate {
 			if currentDate != "" {
-				// End of previous day: snapshot equity, then fire OnMarketClose.
-				recordEquity(e.portfolio.Equity(), &equityCurve, &peakEquity, &maxDrawdown)
-
+				// End of previous day: fire OnMarketClose, then snapshot equity
+				// so the curve reflects the effect of EOD orders (e.g. position flattening).
 				prevDay := days[dayIndex]
 				closeOrders := dsh.OnMarketClose(e.portfolio)
 				if len(closeOrders) > 0 {
 					trades = append(trades, e.fillOrders(closeOrders, prevDay.closes, tick.Timestamp)...)
 				}
+				recordEquity(e.portfolio.Equity(), &equityCurve, &peakEquity, &maxDrawdown)
 				dayIndex++
 			}
 
@@ -403,15 +403,14 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 
 	// Fire final market close if the strategy uses daily hooks.
 	if hasDailyHooks && currentDate != "" {
-		// Snapshot end-of-last-day equity.
-		recordEquity(e.portfolio.Equity(), &equityCurve, &peakEquity, &maxDrawdown)
-
 		lastDay := days[dayIndex]
 		closeOrders := dsh.OnMarketClose(e.portfolio)
 		if len(closeOrders) > 0 {
 			lastTick := ticks[len(ticks)-1]
 			trades = append(trades, e.fillOrders(closeOrders, lastDay.closes, lastTick.Timestamp)...)
 		}
+		// Snapshot equity after EOD orders so the curve reflects final state.
+		recordEquity(e.portfolio.Equity(), &equityCurve, &peakEquity, &maxDrawdown)
 	}
 
 	// Final equity snapshot.
