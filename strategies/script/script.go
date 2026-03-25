@@ -60,6 +60,11 @@ func New(name, src string, config map[string]string, opts ...Option) (*ScriptStr
 	// Inject config object
 	vm.Set("config", config)
 
+	// Inject capital global (read-only initial capital for position sizing)
+	if options.hasCapital {
+		vm.Set("capital", options.capital)
+	}
+
 	// Inject console.log
 	console := vm.NewObject()
 	console.Set("log", func(call goja.FunctionCall) goja.Value {

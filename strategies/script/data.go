@@ -21,12 +21,22 @@ type Option func(*scriptOptions)
 
 type scriptOptions struct {
 	marketData provider.MarketData
+	capital    float64
+	hasCapital bool
 }
 
 // WithMarketData injects a MarketData provider, enabling the `data` global.
 func WithMarketData(md provider.MarketData) Option {
 	return func(o *scriptOptions) {
 		o.marketData = md
+	}
+}
+
+// WithCapital injects the initial capital as a read-only `capital` global.
+func WithCapital(c float64) Option {
+	return func(o *scriptOptions) {
+		o.capital = c
+		o.hasCapital = true
 	}
 }
 
