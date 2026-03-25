@@ -100,6 +100,14 @@ type Engine struct {
 	// Client-side stop order management for providers that don't support native stops.
 	clientSideStops bool
 	pendingStops    []pendingStop
+
+	// Multi-timeframe bar aggregation. Non-nil when the strategy implements
+	// MultiTimeframeSubscriber and has higher timeframes beyond the base.
+	aggregators []*BarAggregator
+
+	// warmingUp is true during recovery replay — orders are simulated locally
+	// instead of being sent to the broker.
+	warmingUp bool
 }
 
 // NewEngine constructs a paper trading engine. md and exec may be the same
@@ -159,6 +167,27 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 
 	if len(symbols) == 0 {
 		return fmt.Errorf("no symbols to trade — pass --symbols or implement SymbolResolver")
+	}
+
+	// If the strategy wants multiple timeframes, set up aggregation.
+	// The engine subscribes at the finest timeframe and builds higher bars locally.
+	if mts, ok := e.strategy.(strategy.MultiTimeframeSubscriber); ok {
+		timeframes := mts.Timeframes()
+		if len(timeframes) > 1 {
+			sorted, err := SortTimeframes(timeframes)
+			if err != nil {
+				return fmt.Errorf("multi-timeframe setup: %w", err)
+			}
+			e.config.Timeframe = sorted[0]
+			for _, tf := range sorted[1:] {
+				dur, _ := ParseTimeframe(tf) // already validated by SortTimeframes
+				agg := NewBarAggregator(tf, dur, func(timeframe string, tick strategy.Tick) {
+					e.onBar(timeframe, tick)
+				})
+				e.aggregators = append(e.aggregators, agg)
+			}
+			log.Printf("paper engine: multi-timeframe active | base=%s higher=%v", sorted[0], sorted[1:])
+		}
 	}
 
 	// Seed portfolio and warm up strategy indicators from account state + recent history.
@@ -324,6 +353,23 @@ func (e *Engine) onTick(tick strategy.Tick) {
 	e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
 	e.checkStops(tick.Symbol, tick.Close)
 	e.submitOrders(e.strategy.OnTick(tick, e.portfolio))
+
+	// Feed through aggregators — completed higher-timeframe bars call onBar inline.
+	for _, agg := range e.aggregators {
+		agg.Update(tick)
+	}
+}
+
+func (e *Engine) onBar(timeframe string, tick strategy.Tick) {
+	e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+	mts := e.strategy.(strategy.MultiTimeframeSubscriber)
+	orders := mts.OnBar(timeframe, tick, e.portfolio)
+	if e.warmingUp {
+		simulateFills(e.strategy, e.portfolio, orders, tick)
+	} else {
+		e.checkStops(tick.Symbol, tick.Close)
+		e.submitOrders(orders)
+	}
 }
 
 func (e *Engine) onTrade(trade strategy.Trade) {

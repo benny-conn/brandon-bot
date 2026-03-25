@@ -84,6 +84,7 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 	if err != nil {
 		log.Printf("recovery: warm-up bar fetch failed (non-fatal, skipping replay): %v", err)
 	} else {
+		e.warmingUp = true
 		log.Printf("recovery: replaying %d bars through strategy (simulating fills locally)...", len(bars))
 
 		// Check if the strategy supports daily session hooks.
@@ -112,6 +113,12 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 
 			orders := e.strategy.OnTick(tick, e.portfolio)
 			simulateFills(e.strategy, e.portfolio, orders, tick)
+
+			// Feed through aggregators so higher-timeframe indicators warm up.
+			// onBar is called inline — warmingUp flag ensures fills are simulated.
+			for _, agg := range e.aggregators {
+				agg.Update(tick)
+			}
 		}
 
 		// Fire final OnMarketClose so strategy state is up to date.
@@ -123,6 +130,8 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 			}
 		}
 	}
+
+	e.warmingUp = false
 
 	// Reset portfolio to the real broker state after warmup replay.
 	// Simulated fills shifted balances/positions — restore truth before going live.

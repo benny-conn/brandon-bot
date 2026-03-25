@@ -76,16 +76,16 @@ func New(cfg Config) *Provider {
 		var err error
 		privKey, err = parsePrivateKey([]byte(cfg.PrivateKeyPEM))
 		if err != nil {
-			log.Println("kalshi: parsing private key PEM: %v", err)
+			log.Printf("kalshi: parsing private key PEM: %v\n", err)
 		}
 	} else if keyPath != "" {
 		data, err := os.ReadFile(keyPath)
 		if err != nil {
-			log.Println("kalshi: reading private key %q: %v", keyPath, err)
+			log.Printf("kalshi: reading private key %q: %v\n", keyPath, err)
 		}
 		privKey, err = parsePrivateKey(data)
 		if err != nil {
-			log.Println("kalshi: parsing private key %q: %v", keyPath, err)
+			log.Printf("kalshi: parsing private key %q: %v\n", keyPath, err)
 		}
 	}
 

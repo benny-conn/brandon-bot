@@ -95,6 +95,20 @@ type TradeSubscriber interface {
 	OnTrade(trade Trade, portfolio Portfolio) []Order
 }
 
+// MultiTimeframeSubscriber is an optional interface a strategy can implement
+// to receive bars at multiple timeframes simultaneously. Timeframes returns
+// all timeframes the strategy needs (e.g. ["1m", "5m", "1h"]). The engine
+// subscribes to the finest timeframe and builds higher-timeframe bars by
+// aggregating base bars. OnTick continues to fire for every base bar;
+// OnBar fires when a higher-timeframe bar completes.
+//
+// Timeframes must be clean multiples of each other (e.g. 1m→5m, 5m→15m).
+// The engine picks the finest as the base subscription timeframe.
+type MultiTimeframeSubscriber interface {
+	Timeframes() []string
+	OnBar(timeframe string, tick Tick, portfolio Portfolio) []Order
+}
+
 // Quote represents a real-time bid/ask update from the exchange.
 type Quote struct {
 	Symbol    string

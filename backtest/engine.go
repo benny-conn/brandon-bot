@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/benny-conn/brandon-bot/engine"
 	"github.com/benny-conn/brandon-bot/internal/portfolio"
 	"github.com/benny-conn/brandon-bot/strategy"
 )
@@ -212,6 +213,34 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		currentDate string
 	)
 
+	// Multi-timeframe support: set up aggregators if the strategy wants it.
+	mts, hasMTF := e.strategy.(strategy.MultiTimeframeSubscriber)
+	var aggregators []*engine.BarAggregator
+	type completedBar struct {
+		timeframe string
+		tick      strategy.Tick
+	}
+	var completedBars []completedBar
+
+	if hasMTF {
+		timeframes := mts.Timeframes()
+		if len(timeframes) > 1 {
+			sorted, err := engine.SortTimeframes(timeframes)
+			if err != nil {
+				return &Results{InitialCapital: e.portfolio.Cash()}
+			}
+			for _, tf := range sorted[1:] {
+				dur, _ := engine.ParseTimeframe(tf)
+				agg := engine.NewBarAggregator(tf, dur, func(timeframe string, tick strategy.Tick) {
+					completedBars = append(completedBars, completedBar{timeframe, tick})
+				})
+				aggregators = append(aggregators, agg)
+			}
+		} else {
+			hasMTF = false
+		}
+	}
+
 	for i, tick := range ticks {
 		// Update market prices so Equity() stays accurate.
 		e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
@@ -250,21 +279,34 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 
 		// --- Ask the strategy what to do ---
 		orders := e.strategy.OnTick(tick, e.portfolio)
-		if len(orders) == 0 {
-			continue
+		if len(orders) > 0 {
+			// Find next bar for fill simulation.
+			nextIdx := nextSameSymbol[i]
+			if nextIdx != -1 {
+				nextBar := ticks[nextIdx]
+				tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
+				trades = append(trades, e.fillOrders(orders, tickPrices, nextBar.Timestamp)...)
+			}
 		}
 
-		// Find next bar for fill simulation.
-		nextIdx := nextSameSymbol[i]
-		if nextIdx == -1 {
-			// Last bar for this symbol — can't fill, drop the orders.
-			continue
+		// --- Feed through aggregators for higher-timeframe bars ---
+		if hasMTF {
+			for _, agg := range aggregators {
+				agg.Update(tick)
+			}
+			for _, cb := range completedBars {
+				barOrders := mts.OnBar(cb.timeframe, cb.tick, e.portfolio)
+				if len(barOrders) > 0 {
+					nextIdx := nextSameSymbol[i]
+					if nextIdx != -1 {
+						nextBar := ticks[nextIdx]
+						tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
+						trades = append(trades, e.fillOrders(barOrders, tickPrices, nextBar.Timestamp)...)
+					}
+				}
+			}
+			completedBars = completedBars[:0]
 		}
-		nextBar := ticks[nextIdx]
-
-		// OnTick orders fill at the next same-symbol bar's open.
-		tickPrices := map[string]float64{tick.Symbol: nextBar.Open}
-		trades = append(trades, e.fillOrders(orders, tickPrices, nextBar.Timestamp)...)
 	}
 
 	// Fire final market close if the strategy uses daily hooks.
