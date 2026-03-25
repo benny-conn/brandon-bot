@@ -14,6 +14,9 @@ const (
 	maxHistoryCallsPerTick = 10
 	historyCacheTTL        = 5 * time.Minute
 	historyTimeout         = 30 * time.Second
+	fetchRetries           = 2
+	fetchRetryBaseDelay    = 500 * time.Millisecond
+	fetchErrorCooldown     = 10 * time.Second // suppress retries after an error
 )
 
 // Option configures optional features of a ScriptStrategy.
@@ -106,12 +109,16 @@ type dataGlobal struct {
 	// currentTime is the simulated bar timestamp, updated each tick.
 	// Used instead of time.Now() so data.history() works correctly during backtesting.
 	currentTime time.Time
+	// lastFetchError tracks the last fetch error time per symbol to implement
+	// a cooldown period that prevents hammering a rate-limited API.
+	lastFetchError map[string]time.Time
 }
 
 func newDataGlobal(md provider.MarketData) *dataGlobal {
 	return &dataGlobal{
-		md:    md,
-		cache: make(map[historyCacheKey]historyCacheEntry),
+		md:             md,
+		cache:          make(map[historyCacheKey]historyCacheEntry),
+		lastFetchError: make(map[string]time.Time),
 	}
 }
 
@@ -173,7 +180,14 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			dg.mu.Unlock()
 			return vm.ToValue(entry.data)
 		}
+		// Check if this symbol is in a cooldown period after a recent error.
+		if lastErr, ok := dg.lastFetchError[symbol]; ok && time.Since(lastErr) < fetchErrorCooldown {
+			dg.mu.Unlock()
+			// Return empty array during cooldown instead of hammering the API.
+			return vm.ToValue([]interface{}{})
+		}
 		dg.mu.Unlock()
+
 		var start time.Time
 		switch timeframe {
 		case "1s":
@@ -196,13 +210,31 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			start = end.Add(-time.Duration(bars*2) * time.Minute) // conservative default
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), historyTimeout)
-		defer cancel()
-
-		fetchedBars, err := dg.md.FetchBars(ctx, symbol, timeframe, start, end)
-		if err != nil {
-			panic(vm.NewGoError(fmt.Errorf("data.history: %w", err)))
+		// Fetch with retry and exponential backoff for transient errors (e.g. 429).
+		var fetchedBars []provider.Bar
+		var fetchErr error
+		for attempt := 0; attempt <= fetchRetries; attempt++ {
+			if attempt > 0 {
+				time.Sleep(fetchRetryBaseDelay * time.Duration(1<<(attempt-1)))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), historyTimeout)
+			fetchedBars, fetchErr = dg.md.FetchBars(ctx, symbol, timeframe, start, end)
+			cancel()
+			if fetchErr == nil {
+				break
+			}
 		}
+		if fetchErr != nil {
+			// Record the error time so subsequent ticks use cooldown.
+			dg.mu.Lock()
+			dg.lastFetchError[symbol] = time.Now()
+			dg.mu.Unlock()
+			panic(vm.NewGoError(fmt.Errorf("data.history: %w", fetchErr)))
+		}
+		// Clear any previous error cooldown on success.
+		dg.mu.Lock()
+		delete(dg.lastFetchError, symbol)
+		dg.mu.Unlock()
 
 		// Trim to requested count (take last N bars)
 		if len(fetchedBars) > bars {
