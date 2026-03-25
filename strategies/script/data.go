@@ -160,19 +160,30 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 			end = time.Now().UTC()
 		}
 
-		// Cache key includes truncated end time so backtest time advances
-		// invalidate stale entries. Truncation granularity depends on the
-		// requested timeframe to balance accuracy vs API call volume.
+		// Cache key includes truncated end time so advancing bar time
+		// eventually invalidates entries. Granularity is intentionally coarse
+		// (5-10x the bar duration) to avoid hammering the API — a script
+		// calling data.history(sym, 50, "1m") at 10:01 and 10:05 gets
+		// nearly identical data (49/50 bars overlap). During backtesting
+		// this is critical because simulated time advances rapidly.
 		var cacheGranularity time.Duration
 		switch timeframe {
-		case "1s", "3s":
+		case "1s":
 			cacheGranularity = 30 * time.Second
+		case "15s":
+			cacheGranularity = 2 * time.Minute
+		case "30s":
+			cacheGranularity = 3 * time.Minute
 		case "1m":
-			cacheGranularity = time.Minute
+			cacheGranularity = 5 * time.Minute
 		case "5m":
-			cacheGranularity = 5 * time.Minute
+			cacheGranularity = 15 * time.Minute
+		case "15m":
+			cacheGranularity = 30 * time.Minute
+		case "30m":
+			cacheGranularity = 30 * time.Minute
 		default:
-			cacheGranularity = 5 * time.Minute
+			cacheGranularity = 15 * time.Minute
 		}
 		truncatedEnd := end.Truncate(cacheGranularity)
 		key := historyCacheKey{symbol: symbol, bars: bars, timeframe: timeframe, endTime: truncatedEnd.Unix()}
@@ -192,8 +203,10 @@ func registerData(vm *goja.Runtime, dg *dataGlobal) {
 		switch timeframe {
 		case "1s":
 			start = end.Add(-time.Duration(bars*2) * time.Second)
-		case "3s":
-			start = end.Add(-time.Duration(bars*6) * time.Second)
+		case "15s":
+			start = end.Add(-time.Duration(bars*30) * time.Second)
+		case "30s":
+			start = end.Add(-time.Duration(bars*60) * time.Second)
 		case "1m":
 			start = end.Add(-time.Duration(bars*2) * time.Minute)
 		case "5m":

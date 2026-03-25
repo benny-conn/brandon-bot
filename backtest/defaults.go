@@ -8,6 +8,8 @@ import "time"
 func DefaultDuration(timeframe string) time.Duration {
 	const day = 24 * time.Hour
 	switch timeframe {
+	case "1s", "15s", "30s":
+		return 7 * day
 	case "1m", "5m":
 		return 30 * day
 	case "15m", "30m", "1h":

@@ -1027,12 +1027,18 @@ func barParams(timeframe string) (unit, unitNumber int) {
 	switch timeframe {
 	case "1s":
 		return 1, 1
+	case "15s":
+		return 1, 15
+	case "30s":
+		return 1, 30
 	case "1m":
 		return 2, 1
 	case "5m":
 		return 2, 5
 	case "15m":
 		return 2, 15
+	case "30m":
+		return 2, 30
 	case "1h":
 		return 3, 1
 	case "1d":
@@ -1047,12 +1053,18 @@ func barInterval(timeframe string) time.Duration {
 	switch timeframe {
 	case "1s":
 		return time.Second
+	case "15s":
+		return 15 * time.Second
+	case "30s":
+		return 30 * time.Second
 	case "1m":
 		return time.Minute
 	case "5m":
 		return 5 * time.Minute
 	case "15m":
 		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
 	case "1h":
 		return time.Hour
 	case "1d":

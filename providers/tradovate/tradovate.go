@@ -842,12 +842,18 @@ func chartParams(timeframe string) (elementSize int, elementSizeUnit, underlying
 		// Tradovate doesn't have 1-second bars natively — use tick bars (closest equivalent).
 		// For sub-second strategy logic, use SubscribeTrades instead.
 		return 1, "UnderlyingUnits", "Tick"
+	case "15s":
+		return 15, "UnderlyingUnits", "Tick"
+	case "30s":
+		return 30, "UnderlyingUnits", "Tick"
 	case "1m":
 		return 1, "MinuteValue", "MinuteBar"
 	case "5m":
 		return 5, "MinuteValue", "MinuteBar"
 	case "15m":
 		return 15, "MinuteValue", "MinuteBar"
+	case "30m":
+		return 30, "MinuteValue", "MinuteBar"
 	case "1h":
 		return 60, "MinuteValue", "MinuteBar"
 	case "1d":
@@ -863,12 +869,20 @@ func estimateBars(start, end time.Time, timeframe string) int {
 	days := dur.Hours() / 24
 	var barsPerDay float64
 	switch timeframe {
+	case "1s":
+		barsPerDay = 23 * 3600
+	case "15s":
+		barsPerDay = 23 * 240
+	case "30s":
+		barsPerDay = 23 * 120
 	case "1m":
 		barsPerDay = 23 * 60 // futures trade ~23h/day
 	case "5m":
 		barsPerDay = 23 * 12
 	case "15m":
 		barsPerDay = 23 * 4
+	case "30m":
+		barsPerDay = 23 * 2
 	case "1h":
 		barsPerDay = 23
 	default:

@@ -13,12 +13,18 @@ func ParseTimeframe(tf string) (time.Duration, error) {
 	switch tf {
 	case "1s":
 		return time.Second, nil
+	case "15s":
+		return 15 * time.Second, nil
+	case "30s":
+		return 30 * time.Second, nil
 	case "1m":
 		return time.Minute, nil
 	case "5m":
 		return 5 * time.Minute, nil
 	case "15m":
 		return 15 * time.Minute, nil
+	case "30m":
+		return 30 * time.Minute, nil
 	case "1h":
 		return time.Hour, nil
 	case "1d":
