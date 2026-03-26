@@ -125,6 +125,22 @@ type Engine struct {
 	// warmingUp is true during recovery replay — orders are simulated locally
 	// instead of being sent to the broker.
 	warmingUp bool
+
+	// Observability counters for periodic status logging.
+	stats engineStats
+}
+
+// engineStats tracks event counters for periodic status logging.
+type engineStats struct {
+	barsReceived   int64
+	tradesReceived int64
+	quotesReceived int64
+	fillsReceived  int64
+	ordersPlaced   int64
+	ordersErrored  int64
+	lastBarTime    map[string]time.Time // symbol → last bar timestamp
+	lastBarAt      time.Time            // wall-clock time of last bar received
+	startTime      time.Time
 }
 
 // NewEngine constructs a paper trading engine. md and exec may be the same
@@ -349,6 +365,13 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 		}
 	}
 
+	// Initialize stats and start periodic status logging.
+	e.stats = engineStats{
+		lastBarTime: make(map[string]time.Time),
+		startTime:   time.Now(),
+	}
+	go e.statusLogger(ctx)
+
 	go e.processLoop(ctx)
 
 	log.Printf("paper engine: connecting to bar stream | symbols=%v timeframe=%s", symbols, e.baseTimeframe)
@@ -405,6 +428,12 @@ func (e *Engine) processLoop(ctx context.Context) {
 }
 
 func (e *Engine) handleBar(timeframe string, tick strategy.Tick) {
+	if !e.warmingUp && timeframe == e.baseTimeframe {
+		e.stats.barsReceived++
+		e.stats.lastBarTime[tick.Symbol] = tick.Timestamp
+		e.stats.lastBarAt = time.Now()
+	}
+
 	e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
 	orders := e.strategy.OnBar(timeframe, tick, e.portfolio)
 	if e.warmingUp {
@@ -423,6 +452,7 @@ func (e *Engine) handleBar(timeframe string, tick strategy.Tick) {
 }
 
 func (e *Engine) onTrade(trade strategy.Trade) {
+	e.stats.tradesReceived++
 	e.portfolio.UpdateMarketPrice(trade.Symbol, trade.Price)
 	e.checkStops(trade.Symbol, trade.Price)
 	ts := e.strategy.(strategy.TradeSubscriber) // safe: only called when strategy implements it
@@ -430,6 +460,7 @@ func (e *Engine) onTrade(trade strategy.Trade) {
 }
 
 func (e *Engine) onQuote(quote strategy.Quote) {
+	e.stats.quotesReceived++
 	qs := e.strategy.(strategy.QuoteSubscriber) // safe: only called when strategy implements it
 	e.submitOrders(qs.OnQuote(quote, e.portfolio))
 }
@@ -447,6 +478,8 @@ func (e *Engine) onMarketClose() {
 }
 
 func (e *Engine) onFill(fill strategy.Fill) {
+	e.stats.fillsReceived++
+
 	// Compute per-fill realized P&L and classify side BEFORE applying.
 	fill.RealizedPL = e.portfolio.ComputeFillPL(fill)
 	fill.Side = e.portfolio.ClassifyFillSide(fill)
@@ -552,9 +585,11 @@ func (e *Engine) submitOrders(orders []strategy.Order) {
 func (e *Engine) placeOrder(order strategy.Order) {
 	result, err := e.exec.PlaceOrder(e.ctx, order)
 	if err != nil {
+		e.stats.ordersErrored++
 		log.Printf("order error: %v", err)
 		return
 	}
+	e.stats.ordersPlaced++
 	log.Printf("order placed: %s %s qty=%.2f reason=%q id=%s",
 		order.Side, order.Symbol, order.Qty, order.Reason, result.ID)
 
@@ -605,6 +640,111 @@ func (e *Engine) checkStops(symbol string, price float64) {
 		e.placeOrder(submit)
 	}
 	e.pendingStops = remaining
+}
+
+// RuntimeErrorReporter is an optional interface a strategy can implement to
+// expose runtime errors for status logging. ScriptStrategy implements this.
+type RuntimeErrorReporter interface {
+	RuntimeErrors() []string
+}
+
+// statusLogger prints periodic status updates so operators can confirm the
+// engine is alive, receiving data, and the strategy is healthy.
+func (e *Engine) statusLogger(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	var lastBars, lastTrades, lastQuotes, lastFills, lastOrders int64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s := &e.stats
+			uptime := time.Since(s.startTime).Round(time.Second)
+
+			// Compute rates since last log.
+			newBars := s.barsReceived - lastBars
+			newTrades := s.tradesReceived - lastTrades
+			newQuotes := s.quotesReceived - lastQuotes
+			newFills := s.fillsReceived - lastFills
+			newOrders := s.ordersPlaced - lastOrders
+			lastBars = s.barsReceived
+			lastTrades = s.tradesReceived
+			lastQuotes = s.quotesReceived
+			lastFills = s.fillsReceived
+			lastOrders = s.ordersPlaced
+
+			// Per-symbol last bar age.
+			var symbolStatus []string
+			for sym, barTime := range s.lastBarTime {
+				age := time.Since(barTime).Round(time.Second)
+				// Only flag as stale if it's been a while since the bar's timestamp.
+				// During market hours, 1m bars should arrive every ~60s.
+				label := fmt.Sprintf("%s=%s ago", sym, age)
+				symbolStatus = append(symbolStatus, label)
+			}
+
+			// Data gap warning.
+			sinceLastBar := ""
+			if !s.lastBarAt.IsZero() {
+				sinceLastBar = fmt.Sprintf(" | last_bar_wall=%s ago", time.Since(s.lastBarAt).Round(time.Second))
+			}
+
+			// Portfolio snapshot.
+			cash := e.portfolio.Cash()
+			equity := e.portfolio.Equity()
+			totalPL := e.portfolio.TotalPL()
+			positions := e.portfolio.Positions()
+
+			log.Printf("status: uptime=%s bars=%d(+%d) trades=%d(+%d) quotes=%d(+%d) fills=%d(+%d) orders=%d(+%d) errors=%d%s",
+				uptime, s.barsReceived, newBars, s.tradesReceived, newTrades,
+				s.quotesReceived, newQuotes, s.fillsReceived, newFills,
+				s.ordersPlaced, newOrders, s.ordersErrored, sinceLastBar)
+
+			if len(symbolStatus) > 0 {
+				log.Printf("status: last_bar_data: %s", joinStrings(symbolStatus, ", "))
+			}
+
+			log.Printf("status: portfolio cash=$%.2f equity=$%.2f pl=$%.2f open_positions=%d",
+				cash, equity, totalPL, len(positions))
+
+			for _, pos := range positions {
+				log.Printf("status:   %s qty=%.2f avg=$%.2f mkt=$%.2f upl=$%.2f",
+					pos.Symbol, pos.Qty, pos.AvgCost, pos.MarketValue, pos.UnrealizedPL)
+			}
+
+			// Report strategy runtime errors if available.
+			if reporter, ok := e.strategy.(RuntimeErrorReporter); ok {
+				if errs := reporter.RuntimeErrors(); len(errs) > 0 {
+					log.Printf("status: strategy has %d runtime error(s):", len(errs))
+					for _, err := range errs {
+						log.Printf("status:   %s", err)
+					}
+				}
+			}
+
+			// Warn if no bars received recently.
+			if s.barsReceived > 0 && newBars == 0 {
+				log.Println("status: WARNING — no new bars in the last 60s")
+			}
+			if s.barsReceived == 0 && uptime > 2*time.Minute {
+				log.Println("status: WARNING — no bars received since startup")
+			}
+		}
+	}
+}
+
+func joinStrings(ss []string, sep string) string {
+	result := ""
+	for i, s := range ss {
+		if i > 0 {
+			result += sep
+		}
+		result += s
+	}
+	return result
 }
 
 // addSymbols dynamically subscribes to new symbols mid-run. Each call
