@@ -115,12 +115,15 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 			if hasDailyHooks && date != currentDate {
 				if currentDate != "" {
 					// End of previous day — fire OnMarketClose.
+					e.strategy.SetPortfolio(e.portfolio)
 					closeOrders := dsh.OnMarketClose()
 					simulateFills(e.strategy, e.portfolio, closeOrders, tick, e)
 				}
 				currentDate = date
 				// Start of new day — fire OnMarketOpen.
 				e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+				e.portfolio.ResetDaily()
+				e.strategy.SetPortfolio(e.portfolio)
 				openOrders := dsh.OnMarketOpen()
 				simulateFills(e.strategy, e.portfolio, openOrders, tick, e)
 			} else {
@@ -134,6 +137,7 @@ func (e *Engine) recover(ctx context.Context, symbols []string) error {
 
 		// Fire final OnMarketClose so strategy state is up to date.
 		if hasDailyHooks && currentDate != "" {
+			e.strategy.SetPortfolio(e.portfolio)
 			closeOrders := dsh.OnMarketClose()
 			if len(bars) > 0 {
 				lastTick := provider.BarToTick(bars[len(bars)-1])
