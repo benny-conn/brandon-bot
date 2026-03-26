@@ -867,6 +867,30 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 		req["stopPrice"] = order.StopPrice
 	}
 
+	// Broker-native bracket orders: convert price distance to ticks.
+	if order.StopLoss > 0 && contract.TickSize > 0 {
+		slTicks := int(order.StopLoss / contract.TickSize)
+		if slTicks > 0 {
+			req["stopLossBracket"] = map[string]any{
+				"ticks": slTicks,
+				"type":  2, // market
+			}
+			log.Printf("topstepx: bracket SL=%d ticks (%.2f points) for %s %s",
+				slTicks, order.StopLoss, order.Side, order.Symbol)
+		}
+	}
+	if order.TakeProfit > 0 && contract.TickSize > 0 {
+		tpTicks := int(order.TakeProfit / contract.TickSize)
+		if tpTicks > 0 {
+			req["takeProfitBracket"] = map[string]any{
+				"ticks": tpTicks,
+				"type":  1, // limit
+			}
+			log.Printf("topstepx: bracket TP=%d ticks (%.2f points) for %s %s",
+				tpTicks, order.TakeProfit, order.Side, order.Symbol)
+		}
+	}
+
 	var resp struct {
 		OrderID      int64  `json:"orderId"`
 		Success      bool   `json:"success"`

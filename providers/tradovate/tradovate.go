@@ -514,16 +514,62 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 		"timeInForce": "Day",
 		"isAutomated": true,
 	}
-	if order.OrderType == "limit" && order.LimitPrice > 0 {
+	switch order.OrderType {
+	case "limit":
 		req["orderType"] = "Limit"
 		req["timeInForce"] = "GTC"
-		req["price"] = order.LimitPrice
+		if order.LimitPrice > 0 {
+			req["price"] = order.LimitPrice
+		}
+	case "stop":
+		req["orderType"] = "Stop"
+		if order.StopPrice > 0 {
+			req["stopPrice"] = order.StopPrice
+		}
+	case "stop_limit":
+		req["orderType"] = "StopLimit"
+		if order.LimitPrice > 0 {
+			req["price"] = order.LimitPrice
+		}
+		if order.StopPrice > 0 {
+			req["stopPrice"] = order.StopPrice
+		}
+	}
+
+	// Broker-native brackets via OSO (one-sends-other).
+	// StopLoss and TakeProfit are absolute prices for Tradovate.
+	// When the entry fills, both brackets activate as OCO pair.
+	endpoint := "order/placeorder"
+	if order.StopLoss > 0 || order.TakeProfit > 0 {
+		endpoint = "order/placeOSO"
+		exitAction := "Sell"
+		if order.Side == "sell" {
+			exitAction = "Buy"
+		}
+		if order.TakeProfit > 0 {
+			req["bracket1"] = map[string]any{
+				"action":    exitAction,
+				"orderType": "Limit",
+				"price":     order.TakeProfit,
+			}
+		}
+		if order.StopLoss > 0 {
+			bracketKey := "bracket2"
+			if order.TakeProfit == 0 {
+				bracketKey = "bracket1" // only SL, no TP
+			}
+			req[bracketKey] = map[string]any{
+				"action":    exitAction,
+				"orderType": "Stop",
+				"stopPrice": order.StopLoss,
+			}
+		}
 	}
 
 	var resp struct {
 		OrderID int64 `json:"orderId"`
 	}
-	if err := conn.Request(ctx, "order/placeorder", req, &resp); err != nil {
+	if err := conn.Request(ctx, endpoint, req, &resp); err != nil {
 		return provider.OrderResult{}, fmt.Errorf("tradovate placeOrder %s %s: %w",
 			order.Side, order.Symbol, err)
 	}

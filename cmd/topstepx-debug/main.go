@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/benny-conn/brandon-bot/provider"
 	topstepxprovider "github.com/benny-conn/brandon-bot/providers/topstepx"
 	"github.com/benny-conn/brandon-bot/strategy"
 )
@@ -108,12 +109,55 @@ func main() {
 	if len(positions) == 0 {
 		fmt.Println("  (none)")
 	}
+
+	// Collect unique symbols to fetch live prices
+	symbolSet := make(map[string]bool)
 	for _, pos := range positions {
+		symbolSet[parseSymbol(pos.Symbol)] = true
+	}
+
+	// Fetch a quick quote for each symbol to calculate unrealized P&L
+	prices := make(map[string]float64)
+	for sym := range symbolSet {
+		quoteCtx, quoteCancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = p.SubscribeQuotes(quoteCtx, []string{sym}, func(q provider.Quote) {
+			if q.BidPrice > 0 && prices[sym] == 0 {
+				prices[sym] = (q.BidPrice + q.AskPrice) / 2 // mid price
+				quoteCancel()
+			}
+		})
+		quoteCancel()
+	}
+
+	// Known point values for common symbols
+	pointValues := map[string]float64{
+		"MNQ": 2, "NQ": 20, "MES": 5, "ES": 50,
+		"MYM": 0.5, "YM": 5, "M2K": 5, "RTY": 50,
+		"MCL": 100, "CL": 1000, "MGC": 10, "GC": 100,
+	}
+
+	var totalUPL float64
+	for _, pos := range positions {
+		sym := parseSymbol(pos.Symbol)
 		side := "LONG"
 		if pos.Qty < 0 {
 			side = "SHORT"
 		}
-		fmt.Printf("  %s  %s  qty=%.0f  avgEntry=$%.2f\n", parseSymbol(pos.Symbol), side, pos.Qty, pos.AvgEntryPrice)
+		mid := prices[sym]
+		pv := pointValues[sym]
+		if pv == 0 {
+			pv = 1
+		}
+		upl := 0.0
+		if mid > 0 {
+			upl = (mid - pos.AvgEntryPrice) * pos.Qty * pv
+			totalUPL += upl
+		}
+		fmt.Printf("  %s  %s  qty=%.0f  avgEntry=$%.2f  mkt=$%.2f  upl=$%.2f\n",
+			sym, side, pos.Qty, pos.AvgEntryPrice, mid, upl)
+	}
+	if len(positions) > 0 {
+		fmt.Printf("\n  Total unrealized P&L: $%.2f\n", totalUPL)
 	}
 
 	fmt.Println("\n--- Open Orders ---")

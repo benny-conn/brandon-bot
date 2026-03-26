@@ -247,6 +247,20 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 		req.LimitPrice = &lp
 		req.TimeInForce = alp.GTC
 	}
+
+	// Broker-native bracket orders: StopLoss/TakeProfit are absolute prices for Alpaca.
+	if order.StopLoss > 0 || order.TakeProfit > 0 {
+		req.OrderClass = alp.Bracket
+		if order.TakeProfit > 0 {
+			tp := decimal.NewFromFloat(order.TakeProfit)
+			req.TakeProfit = &alp.TakeProfit{LimitPrice: &tp}
+		}
+		if order.StopLoss > 0 {
+			sl := decimal.NewFromFloat(order.StopLoss)
+			req.StopLoss = &alp.StopLoss{StopPrice: &sl}
+		}
+	}
+
 	placed, err := p.trading.PlaceOrder(req)
 	if err != nil {
 		return provider.OrderResult{}, fmt.Errorf("placing %s order for %s qty=%.2f: %w",
