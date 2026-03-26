@@ -1,200 +1,233 @@
 # brandon-bot
 
-A paper trading backtester and live simulator in Go. Test a day trading strategy against historical data or run it live against a paper account without risking real money.
+A trading engine in Go that runs JavaScript strategies against live brokers or historical data. Design a strategy in JS, backtest it, then run it live on a paper account — same code, same engine.
 
-Supports three providers: **Alpaca** (stocks/ETFs), **Interactive Brokers** (stocks, futures, and more), and **Tradovate** (futures). Swap between them with a single flag.
+Supports **Alpaca** (stocks/ETFs), **TopStepX** (futures/prop trading), **Tradovate** (futures), **Interactive Brokers** (stocks/futures), **Coinbase** (crypto), and **Kalshi** (prediction markets).
 
 ---
 
-## Prerequisites
+## Quick Start
 
-- Go 1.22+
-- An [Alpaca Markets](https://alpaca.markets) account (free) — for backtesting and Alpaca paper trading
-- An [Interactive Brokers](https://www.interactivebrokers.com) account with paper trading enabled — for IBKR live paper trading
-- A [Tradovate](https://www.tradovate.com) account with API credentials — for Tradovate live paper trading
-- Environment variables set in your shell (see below)
-
-## Environment Variables
-
-**Alpaca** (required for backtesting and `--provider=alpaca`):
 ```bash
-ALPACA_API_KEY=your_key_here
-ALPACA_SECRET=your_secret_here
-ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
+# Backtest an MNQ scalper against TopStepX historical data
+go run ./cmd/backtest \
+  --config configs/default.json \
+  --data-provider topstepx \
+  --symbols MNQ \
+  --script scripts/mnq_scalp.js \
+  --capital 50000
+
+# Run it live on a paper account
+go run ./cmd/paper \
+  --config configs/default.json \
+  --provider topstepx \
+  --symbols MNQ \
+  --script scripts/mnq_scalp.js
 ```
 
-**IBKR** (required for `--provider=ibkr`):
-```bash
-IBKR_ACCOUNT_ID=DU1234567                  # your paper account ID
-IBKR_GATEWAY_URL=https://localhost:5055    # optional, this is the default
+---
+
+## Writing a Strategy
+
+Strategies are JavaScript files. The engine calls your functions, you return orders.
+
+```js
+function timeframes() { return ["1m"] }
+
+function onBar(timeframe, tick) {
+  var sym = tick.symbol
+  var pos = portfolio.position(sym)
+  var spec = getContract(sym)
+
+  // Already in a position? Brackets handle TP/SL.
+  if (pos && pos.side !== "flat") return []
+
+  // Entry signal
+  var b = bars(sym, 30)
+  if (b.length < 20) return []
+  var closes = b.map(function(x) { return x.close })
+  var rsi = ta.rsi(closes, 14)
+
+  if (rsi < 30) {
+    return [{ symbol: sym, side: "buy", qty: 1, orderType: "market",
+              tpDistance: 2.0, slDistance: 1.0 }]
+  }
+  return []
+}
 ```
 
-IBKR also requires **IB Gateway** running locally before starting the bot — see [IBKR Setup](#ibkr-setup) below.
+### Globals (available in all functions)
 
-**Tradovate** (required for `--provider=tradovate`):
-```bash
-TRADOVATE_USERNAME=your_username
-TRADOVATE_PASSWORD=your_password
-TRADOVATE_APP_ID=your_app_name         # registered in the Tradovate developer portal
-TRADOVATE_CID=your_client_id           # from API credentials
-TRADOVATE_SEC=your_api_secret          # from API credentials
-TRADOVATE_DEVICE_ID=some-stable-uuid   # generate once: uuidgen
-TRADOVATE_DEMO=true                    # "false" for live; defaults to demo for safety
-# TRADOVATE_APP_VERSION=1.0            # optional, defaults to 1.0
+| Global | Description |
+|--------|-------------|
+| `portfolio` | Current account state: `cash()`, `equity()`, `position(sym)`, `positions()`, `totalPL()`, `dailyPL()`, `dailyTrades()` |
+| `bars(symbol, count)` | Last N bars from engine memory. Zero latency, no API calls. |
+| `dailyLevels(symbol)` | `{prevHigh, prevLow, prevClose, todayHigh, todayLow, todayOpen}` |
+| `getContract(symbol)` | `{symbol, tickSize, tickValue, pointValue}` — no hardcoding needed |
+| `capital` | Initial capital (constant) |
+| `config` | User key-value config from JSON |
+| `ta` | Technical analysis: `sma`, `ema`, `rsi`, `macd`, `bollinger`, `atr`, `adx`, `stoch`, etc. |
+| `data` | `data.history(symbol, bars, timeframe)` — fetches from provider API (use `bars()` when possible) |
+| `ml` | Machine learning: `linearRegression`, `decisionTree`, `randomForest`, `knn`, `kmeans` |
+| `console` | `console.log(...)` |
+| `http` | `http.get(url)`, `http.post(url, body)` — HTTPS only |
+| `searchAssets` | `searchAssets({text, assetClass})` — discover tradeable symbols |
+
+### Position Object
+
+```js
+var pos = portfolio.position("MNQ")
+// pos.qty          — positive for long, negative for short
+// pos.side         — "long" or "short"
+// pos.entryPrice   — actual fill price
+// pos.avgCost      — average entry price
+// pos.unrealizedPL — current unrealized P&L
+// pos.holdingBars  — bars since position opened
+// pos.marketValue  — current notional value
 ```
+
+### Order Object
+
+```js
+{
+  symbol:     "MNQ",        // required
+  side:       "buy",        // required: "buy" or "sell"
+  qty:        3,            // required
+  orderType:  "market",     // "market" (default), "limit", "stop", "stop_limit"
+  limitPrice: 24000,        // required for "limit" and "stop_limit"
+  stopPrice:  23900,        // required for "stop" and "stop_limit"
+  tpDistance: 1.50,         // take profit distance in price points (broker bracket)
+  slDistance: 0.75,         // stop loss distance in price points (broker bracket)
+  reason:    "RSI oversold" // optional, for logging
+}
+```
+
+### Function Signatures
+
+| Function | Parameters | Returns | Required |
+|----------|-----------|---------|----------|
+| `timeframes()` | none | `string[]` | Yes |
+| `onBar(timeframe, tick)` | timeframe, tick | `order[]` | Yes |
+| `onFill(fill)` | fill | void | No |
+| `onTrade(trade)` | trade | `order[]` | No |
+| `onMarketOpen()` | none | `order[]` | No |
+| `onMarketClose()` | none | `order[]` | No |
+| `onLive(ctx)` | ctx with positions | void | No |
+| `onInit(ctx)` | ctx with symbols, config | void | No |
+| `onExit()` | none | void | No |
+| `resolveSymbols(ctx)` | ctx with searchAssets | `string[]` | No |
+
+`portfolio` is a global — not passed as a parameter to any function.
+
+### Bracket Orders
+
+Set `tpDistance` and `slDistance` on entry orders. The broker places TP (limit) and SL (stop) orders automatically. When one fills, the other is cancelled.
+
+```js
+// Take profit 6 ticks from entry, stop loss 4 ticks
+var spec = getContract(sym)
+return [{ symbol: sym, side: "buy", qty: 3, orderType: "market",
+          tpDistance: 6 * spec.tickSize, slDistance: 4 * spec.tickSize }]
+```
+
+Supported on TopStepX (native brackets), Alpaca (bracket orders), and Tradovate (OSO orders). Also simulated during backtesting.
+
+---
+
+## Configuration
+
+Create a JSON config file with provider credentials and strategy parameters:
+
+```json
+{
+  "topstepx": {
+    "username": "you@example.com",
+    "api_key": "your_key",
+    "account_id": 12345678
+  },
+  "alpaca": {
+    "api_key": "your_key",
+    "secret": "your_secret",
+    "base_url": "https://paper-api.alpaca.markets"
+  },
+  "strategy": {
+    "MAX_CONTRACTS": "3",
+    "TP_TICKS": "8",
+    "SL_TICKS": "4",
+    "DAILY_LOSS_LIMIT": "1000"
+  }
+}
+```
+
+Strategy parameters are available in scripts as `config.MAX_CONTRACTS`, etc.
 
 ---
 
 ## Running a Backtest
 
-Fetches historical bars from Alpaca, replays them through the strategy, and prints a full performance report.
-
 ```bash
-go run cmd/backtest/main.go \
-  --strategy=ma_crossover \
-  --symbols=AAPL,TSLA \
-  --from=2024-01-01 \
-  --to=2024-12-31 \
-  --timeframe=1d \
-  --capital=10000
+go run ./cmd/backtest \
+  --config configs/default.json \
+  --data-provider topstepx \
+  --symbols MNQ \
+  --script scripts/mnq_scalp.js \
+  --capital 50000 \
+  --from 2026-03-01 \
+  --to 2026-03-26
 ```
 
-**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--script` | required | Path to JS strategy file |
+| `--symbols` | `AAPL` | Comma-separated symbols |
+| `--data-provider` | `alpaca` | `alpaca`, `topstepx`, `massive`, `coinbase`, `kalshi` |
+| `--config` | none | JSON config file for credentials + strategy params |
+| `--capital` | `10000` | Starting capital |
+| `--from` | auto | Start date (YYYY-MM-DD) |
+| `--to` | today | End date (YYYY-MM-DD) |
 
-| Flag          | Default        | Description                              |
-| ------------- | -------------- | ---------------------------------------- |
-| `--strategy`  | `ma_crossover` | Strategy to run                          |
-| `--symbols`   | `AAPL`         | Comma-separated ticker list              |
-| `--from`      | required       | Start date (YYYY-MM-DD)                  |
-| `--to`        | required       | End date (YYYY-MM-DD)                    |
-| `--timeframe` | `1d`           | Bar size: `1m`, `5m`, `15m`, `1h`, `1d`  |
-| `--capital`   | `10000`        | Starting capital in USD                  |
-| `--feed`      | `iex`          | Alpaca feed: `iex` (free) or `sip` (paid)|
-
-**Output:**
-
-```
-Fetching 1d bars for AAPL from 2024-01-01 to 2024-12-31...
-Loaded 252 bars
-
-=== Backtest Results ===
-Initial capital:  $10000.00
-Final equity:     $10054.73
-Total return:     0.55%
-Max drawdown:     0.62%
-Sharpe ratio:     0.0405 (per-bar, not annualized)
-Total trades:     3
-Win rate:         0.0% (0 W / 3 L)
-
---- Trade Log ---
-[2024-05-03 04:00] BUY  AAPL  qty=5.78  price=$186.65
-...
-
-Run saved to database (id=1)
-```
-
-Results and fills are saved to SQLite for later review.
+Results are saved to SQLite for review.
 
 ---
 
 ## Running Paper Trading (Live)
 
-Connects to a broker via WebSocket, streams real-time bars, and places orders against your paper account. This is a long-running process — stays alive during market hours and shuts down cleanly on `Ctrl+C`.
-
-### Alpaca
-
 ```bash
-go run cmd/paper/main.go \
-  --provider=alpaca \
-  --strategy=ma_crossover \
-  --symbols=AAPL,TSLA \
-  --timeframe=1m \
-  --capital=10000 \
-  --feed=iex
+go run ./cmd/paper \
+  --config configs/default.json \
+  --provider topstepx \
+  --symbols MNQ \
+  --script scripts/mnq_scalp.js
 ```
 
-### IBKR
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--script` | required | Path to JS strategy file |
+| `--symbols` | `AAPL` | Comma-separated symbols |
+| `--provider` | `alpaca` | `alpaca`, `topstepx`, `tradovate`, `ibkr`, `coinbase`, `kalshi` |
+| `--config` | none | JSON config file |
+| `--capital` | `10000` | Starting capital (first run only — subsequent runs use broker state) |
 
-```bash
-go run cmd/paper/main.go \
-  --provider=ibkr \
-  --strategy=ma_crossover \
-  --symbols=AAPL \
-  --timeframe=1m \
-  --capital=10000
-```
+On startup, the engine:
+1. Fetches account balance and positions from the broker
+2. Replays historical bars to warm up indicators
+3. Calls `onLive()` to signal the transition to live trading
+4. Begins streaming real-time bars and processing orders
 
-### Tradovate
-
-```bash
-go run cmd/paper/main.go \
-  --provider=tradovate \
-  --strategy=ma_crossover \
-  --symbols=ESZ4 \
-  --timeframe=1m \
-  --capital=50000
-```
-
-Note: Tradovate uses specific contract symbols (e.g. `ESZ4` for E-Mini S&P December 2024, `NQZ4` for E-Mini Nasdaq). Month codes: F=Jan G=Feb H=Mar J=Apr K=May M=Jun N=Jul Q=Aug U=Sep V=Oct X=Nov Z=Dec.
-
-**Flags:**
-
-| Flag           | Default        | Description                                                                               |
-| -------------- | -------------- | ----------------------------------------------------------------------------------------- |
-| `--provider`   | `alpaca`       | Data + execution provider: `alpaca` or `ibkr`                                             |
-| `--strategy`   | `ma_crossover` | Strategy to run                                                                           |
-| `--symbols`    | `AAPL`         | Comma-separated ticker list                                                               |
-| `--timeframe`  | `1m`           | Bar size: `1s`, `1m`, `5m`, `15m`, `1h`, `1d`                                            |
-| `--capital`    | `10000`        | Starting capital (used only on first run — subsequent runs seed from real account state)  |
-| `--feed`       | `iex`          | Alpaca feed: `iex` (free) or `sip` (paid) — ignored for IBKR                             |
-
-**On startup**, the engine automatically:
-
-1. Fetches your real account balance and open positions from the broker
-2. Replays recent historical bars to warm up strategy indicators (EMAs, etc.)
-3. Injects any existing positions into the strategy so it knows what it's holding
-4. Then begins the live WebSocket stream
-
-This means **restarting the bot mid-session is safe** — it picks up from the correct state rather than thinking it has no positions.
+Restarting mid-session is safe — the engine recovers from broker state.
 
 ---
 
-## IBKR Setup
+## Providers
 
-IBKR paper trading requires **IB Gateway** running locally. IB Gateway is a lightweight headless process (no charts UI) that the bot connects to via the Client Portal API.
-
-1. Download **IB Gateway** from [ibkr.com](https://www.interactivebrokers.com/en/trading/ibgateway.php) (use the stable/latest channel)
-2. Log in with your **paper account** credentials
-3. IB Gateway listens on `https://localhost:5055` — leave it running while the bot is active
-4. Set `IBKR_ACCOUNT_ID` to your paper account ID (format `DU1234567`, visible after login)
-5. Run the bot with `--provider=ibkr`
-
-The bot sends a keep-alive ping to IB Gateway every 55 seconds to maintain the session. You do not need to do anything else to keep it connected.
-
-**Getting a paper account:**
-1. Sign up for a live IBKR account at ibkr.com and wait for approval (~1–3 business days)
-2. After approval, log into the Client Portal → **Settings → Paper Trading Account** to create one
-3. The paper account gets its own separate login credentials
-
----
-
-## Tradovate Setup
-
-Tradovate requires API credentials from their developer portal. Unlike IBKR, no local gateway process is needed — the bot connects directly to Tradovate's cloud API.
-
-1. Sign up at [tradovate.com](https://www.tradovate.com) and open a **Sim (demo) account**
-2. Go to **Account → API Access** in the Tradovate platform to request API credentials
-3. You'll receive a `cid` (client ID) and `sec` (API secret) — set these as `TRADOVATE_CID` and `TRADOVATE_SEC`
-4. Generate a stable device ID once and store it: `uuidgen` (macOS/Linux)
-5. Set `TRADOVATE_DEMO=true` (or omit it — demo is the default)
-6. Run the bot with `--provider=tradovate`
-
-Tokens expire every 90 minutes; the bot renews them automatically every 85 minutes.
-
-**Tradovate vs IBKR for the target strategy:**
-- Tradovate is purpose-built for futures (ES, NQ, CL, etc.) with a clean modern API
-- WebSocket fills arrive natively via `user/syncrequest` — no polling needed
-- For sub-second bar data, use `--timeframe=1s` which maps to tick bars; or use `SubscribeTrades` for individual quote updates
+| Provider | Assets | Brackets | Notes |
+|----------|--------|----------|-------|
+| **TopStepX** | CME futures (ES, NQ, MES, MNQ, CL, GC...) | Native | Prop trading. 4:10 PM ET close. Min 4 tick bracket distance. |
+| **Alpaca** | US stocks/ETFs | Native | Paper trading free. IEX or SIP feeds. |
+| **Tradovate** | CME futures | OSO orders | Cloud API, no local gateway. |
+| **IBKR** | Stocks, futures | Not yet | Requires IB Gateway running locally. |
+| **Coinbase** | Crypto (BTC, ETH, SOL...) | Not yet | 24/7 markets. |
+| **Kalshi** | Prediction markets | N/A | Event-based pricing 0-1. |
 
 ---
 
@@ -203,112 +236,30 @@ Tokens expire every 90 minutes; the bot renews them automatically every 85 minut
 ```
 brandon-bot/
 ├── cmd/
-│   ├── backtest/main.go          # CLI: run a backtest
-│   └── paper/main.go             # CLI: run paper trading live
+│   ├── backtest/          # CLI: run a backtest
+│   ├── paper/             # CLI: run live paper trading
+│   └── topstepx-debug/    # CLI: inspect TopStepX account state
+├── engine/                # Paper trading engine (event loop, recovery, warmup)
+├── backtest/              # Backtest engine (replay, bracket simulation)
+├── strategy/              # Core interfaces (Strategy, Portfolio, Order, Fill)
+├── strategies/script/     # JS runtime (goja VM, all globals, order parsing)
+├── providers/
+│   ├── alpaca/            # Alpaca stocks/ETFs
+│   ├── topstepx/          # TopStepX futures (REST + SignalR)
+│   ├── tradovate/         # Tradovate futures
+│   ├── ibkr/              # Interactive Brokers
+│   ├── coinbase/          # Coinbase crypto
+│   └── kalshi/            # Kalshi prediction markets
+├── provider/              # Shared interfaces (MarketData, Execution, ContractSpec)
 ├── internal/
-│   ├── provider/
-│   │   ├── provider.go           # MarketData + Execution interfaces and shared types
-│   │   ├── alpaca/
-│   │   │   └── alpaca.go         # Alpaca implementation (stocks/ETFs, iex/sip feeds)
-│   │   ├── ibkr/
-│   │   │   ├── client.go         # IB Gateway HTTP + WebSocket client
-│   │   │   └── ibkr.go           # IBKR implementation (stocks, futures)
-│   │   └── tradovate/
-│   │       ├── auth.go           # Token acquisition and 85-minute renewal
-│   │       ├── ws.go             # Tradovate WebSocket framing + heartbeat
-│   │       └── tradovate.go      # Tradovate implementation (futures)
-│   ├── strategy/
-│   │   ├── strategy.go           # Core interfaces: Strategy, Portfolio, Tick, Order, Fill
-│   │   ├── ma_crossover.go       # Example: 9/21 EMA crossover strategy
-│   │   └── rsi_pullback.go       # Example: RSI pullback with 200-SMA trend filter
-│   ├── portfolio/
-│   │   └── portfolio.go          # Tracks cash, positions, P&L
-│   ├── backtest/
-│   │   └── engine.go             # Backtesting engine + performance metrics
-│   ├── paper/
-│   │   ├── engine.go             # Live paper trading engine (WebSocket event loop)
-│   │   └── recovery.go           # Startup state recovery from broker
-│   ├── risk/
-│   │   └── risk.go               # Position sizing helpers
-│   └── db/
-│       └── db.go                 # SQLite logging (runs, fills, snapshots)
-├── go.mod
-└── go.sum
+│   ├── portfolio/         # Cash, positions, P&L tracking
+│   ├── bracket/           # Shared TP/SL bracket simulation
+│   ├── barbuf/            # Bar buffer + daily level tracker
+│   └── db/                # SQLite logging
+├── scripts/               # Example strategies
+├── configs/               # Config files
+└── designer.go            # AI strategy designer (used by server repo)
 ```
-
----
-
-## Adding a Custom Strategy
-
-1. Create `internal/strategy/my_strategy.go`
-2. Implement the `Strategy` interface:
-
-```go
-type MyStrategy struct {
-    // your internal state (indicators, position tracking, etc.)
-}
-
-func (s *MyStrategy) Name() string { return "my_strategy" }
-
-// Called on every bar. Return any orders to place — the engine handles execution.
-// All state lives inside the strategy; the engine only sees what orders come back.
-func (s *MyStrategy) OnTick(tick strategy.Tick, portfolio strategy.Portfolio) []strategy.Order {
-    // your logic here
-    return nil
-}
-
-// Called when an order is filled. Update your internal position tracking.
-func (s *MyStrategy) OnFill(fill strategy.Fill) {}
-
-// Optional: subscribe to individual trade prints instead of (or in addition to) bars.
-// If this method exists, the paper engine automatically subscribes to the trade stream.
-// OnTick is still called for bar events — implement it as a no-op if you don't need it.
-func (s *MyStrategy) OnTrade(trade strategy.Trade, portfolio strategy.Portfolio) []strategy.Order {
-    // react to every individual trade print (price, size, exchange, conditions)
-    return nil
-}
-
-// Optional: support safe restarts mid-position.
-// Called on startup if the bot already holds a position when it comes back up.
-func (s *MyStrategy) SeedPosition(symbol string, qty, avgCost float64) {}
-```
-
-3. Register it in both `cmd/backtest/main.go` and `cmd/paper/main.go`:
-
-```go
-func resolveStrategy(name string) (strategy.Strategy, error) {
-    switch name {
-    case "ma_crossover":
-        return strategy.NewMACrossover(), nil
-    case "my_strategy":           // add this
-        return strategy.NewMyStrategy(), nil
-    default:
-        return nil, fmt.Errorf("available strategies: ma_crossover, my_strategy")
-    }
-}
-```
-
-4. Run it:
-
-```bash
-go run cmd/backtest/main.go --strategy=my_strategy --symbols=AAPL --from=2024-01-01 --to=2024-12-31
-```
-
----
-
-## Built-in Strategies
-
-### MA Crossover
-
-A simple 9/21 exponential moving average crossover, included as a working example to validate the engine. **Not intended for real use.**
-
-- **Buy signal**: 9-period EMA crosses above 21-period EMA → buy 10% of available cash
-- **Sell signal**: 9-period EMA crosses below 21-period EMA → sell full position
-- **Stop loss**: price drops 2% below entry → sell immediately
-
-### RSI Pullback
-
-RSI-based pullback strategy with a 200-period SMA trend filter.
 
 ---
 
@@ -316,25 +267,10 @@ RSI-based pullback strategy with a 200-period SMA trend filter.
 
 Results are logged to SQLite at `DATABASE_PATH` (default: `./trading_bot.db`).
 
-| Table              | Contents                                  |
-| ------------------ | ----------------------------------------- |
-| `backtest_runs`    | Summary metrics for each backtest run     |
-| `backtest_fills`   | Individual fills from each run            |
-| `paper_orders`     | Orders submitted during paper trading     |
-| `paper_fills`      | Fill confirmations from the broker        |
-| `paper_snapshots`  | Portfolio snapshots taken after each fill |
-
----
-
-## Live Trading (Future)
-
-When ready to trade with real money, the architecture is identical — just swap credentials:
-
-**Alpaca live:**
-```bash
-ALPACA_BASE_URL=https://api.alpaca.markets/v2
-```
-
-**IBKR live:** point IB Gateway at your live account instead of paper.
-
-A `cmd/live/main.go` will be added with additional safeguards (position limits, kill switch, etc.) before this is used.
+| Table | Contents |
+|-------|----------|
+| `backtest_runs` | Summary metrics for each backtest |
+| `backtest_fills` | Individual fills per run |
+| `paper_orders` | Orders submitted during live trading |
+| `paper_fills` | Fill confirmations from broker |
+| `paper_snapshots` | Portfolio snapshots after each fill |
