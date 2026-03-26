@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/benny-conn/brandon-bot/engine"
+	"github.com/benny-conn/brandon-bot/internal/barbuf"
 	"github.com/benny-conn/brandon-bot/internal/bracket"
 	"github.com/benny-conn/brandon-bot/internal/portfolio"
 	"github.com/benny-conn/brandon-bot/strategy"
@@ -96,17 +97,21 @@ func WithMultipliers(m map[string]float64) EngineOption {
 
 // Engine runs a strategy against a sorted slice of historical ticks.
 type Engine struct {
-	strategy    strategy.Strategy
-	portfolio   *portfolio.SimulatedPortfolio
-	diagnostics Diagnostics
-	multipliers map[string]float64  // per-symbol point value (nil = all equities)
-	brackets    []bracket.Pending   // active TP/SL brackets
+	strategy     strategy.Strategy
+	portfolio    *portfolio.SimulatedPortfolio
+	diagnostics  Diagnostics
+	multipliers  map[string]float64  // per-symbol point value (nil = all equities)
+	brackets     []bracket.Pending   // active TP/SL brackets
+	barBuffer    *barbuf.Buffer
+	dailyTracker *barbuf.DailyTracker
 }
 
 func NewEngine(strat strategy.Strategy, initialCapital float64, opts ...EngineOption) *Engine {
 	e := &Engine{
-		strategy:  strat,
-		portfolio: portfolio.NewSimulatedPortfolio(initialCapital),
+		strategy:     strat,
+		portfolio:    portfolio.NewSimulatedPortfolio(initialCapital),
+		barBuffer:    barbuf.New(),
+		dailyTracker: barbuf.NewDailyTracker(),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -335,6 +340,11 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	// Per-symbol tick index for cross-symbol order fills.
 	symIndices := buildSymbolTickIndices(ticks)
 
+	// Pass runtime helpers to strategy.
+	if rhc, ok := e.strategy.(strategy.RuntimeHelpersConsumer); ok {
+		rhc.SetRuntimeHelpers(e.barBuffer, e.dailyTracker)
+	}
+
 	// Check if the strategy supports daily session hooks.
 	dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
 
@@ -384,6 +394,9 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	for i, tick := range ticks {
 		// Update market prices so Equity() stays accurate.
 		e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
+		e.barBuffer.Push(tick)
+		e.dailyTracker.Update(tick.Symbol, tick.Timestamp.UTC().Format("2006-01-02"),
+			tick.Open, tick.High, tick.Low, tick.Close)
 
 		// Check pending TP/SL brackets against this tick's price range.
 		bracketTrades := e.checkBrackets(tick)
@@ -413,6 +426,7 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 			for sym, openPrice := range newDay.opens {
 				e.portfolio.UpdateMarketPrice(sym, openPrice)
 			}
+			e.portfolio.ResetDaily()
 			e.strategy.SetPortfolio(e.portfolio)
 			openOrders := dsh.OnMarketOpen()
 			if len(openOrders) > 0 {

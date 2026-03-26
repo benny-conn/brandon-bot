@@ -27,6 +27,10 @@ type SimulatedPortfolio struct {
 	multipliers map[string]float64 // symbol → point value (1.0 for equities)
 	holdingBars map[string]int     // symbol → bars since position opened
 	lastPrices  map[string]float64 // symbol → most recent market price
+
+	// Daily tracking — reset by ResetDaily().
+	dailyRealizedPL float64 // realized P&L since last daily reset
+	dailyTrades     int     // completed round-trips since last daily reset
 }
 
 func NewSimulatedPortfolio(initialCash float64) *SimulatedPortfolio {
@@ -36,6 +40,32 @@ func NewSimulatedPortfolio(initialCash float64) *SimulatedPortfolio {
 		holdingBars: make(map[string]int),
 		lastPrices:  make(map[string]float64),
 	}
+}
+
+// ResetDaily clears daily P&L and trade counters. Called by the engine at market open.
+func (p *SimulatedPortfolio) ResetDaily() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dailyRealizedPL = 0
+	p.dailyTrades = 0
+}
+
+// DailyPL returns realized + unrealized P&L since the last daily reset.
+func (p *SimulatedPortfolio) DailyPL() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	upl := 0.0
+	for _, pos := range p.positions {
+		upl += pos.UnrealizedPL
+	}
+	return p.dailyRealizedPL + upl
+}
+
+// DailyTrades returns the number of completed round-trips since the last daily reset.
+func (p *SimulatedPortfolio) DailyTrades() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dailyTrades
 }
 
 // SetMultipliers configures per-symbol contract multipliers for futures P&L.
@@ -221,6 +251,7 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 			}
 			realizedPL := (pos.AvgCost - fill.Price) * coveredQty * mult
 			p.realizedPL += realizedPL
+			p.dailyRealizedPL += realizedPL
 			if futures {
 				p.cash += realizedPL
 			}
@@ -229,6 +260,7 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 			if pos.Qty == 0 {
 				delete(p.positions, fill.Symbol)
 				delete(p.holdingBars, fill.Symbol)
+				p.dailyTrades++
 			} else if pos.Qty > 0 {
 				// Buy exceeded short qty — flipped to long. Reset avg cost.
 				pos.AvgCost = fill.Price
@@ -267,6 +299,7 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 			}
 			realizedPL := (fill.Price - pos.AvgCost) * closedQty * mult
 			p.realizedPL += realizedPL
+			p.dailyRealizedPL += realizedPL
 			if futures {
 				p.cash += realizedPL
 			}
@@ -278,6 +311,7 @@ func (p *SimulatedPortfolio) ApplyFill(fill strategy.Fill) {
 		if pos.Qty == 0 {
 			delete(p.positions, fill.Symbol)
 			delete(p.holdingBars, fill.Symbol)
+			p.dailyTrades++
 		} else if pos.Qty < 0 && wasLong {
 			// Sell exceeded long qty — flipped to short. Reset avg cost.
 			pos.AvgCost = fill.Price

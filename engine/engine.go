@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/benny-conn/brandon-bot/internal/barbuf"
 	"github.com/benny-conn/brandon-bot/internal/bracket"
 	"github.com/benny-conn/brandon-bot/internal/portfolio"
 	"github.com/benny-conn/brandon-bot/provider"
@@ -139,8 +140,13 @@ type Engine struct {
 	warmupBrackets []bracket.Pending
 
 	// contractSpecs caches per-symbol contract specs queried during Run().
-	// Used for TP/SL distance-to-price conversion and passed to strategies.
 	contractSpecs map[string]provider.ContractSpec
+
+	// barBuffer stores the last N bars per symbol for the bars() global.
+	barBuffer *barbuf.Buffer
+
+	// dailyTracker tracks daily high/low/open/close per symbol.
+	dailyTracker *barbuf.DailyTracker
 
 	// Observability counters for periodic status logging.
 	stats engineStats
@@ -173,6 +179,8 @@ func NewEngine(strat strategy.Strategy, md provider.MarketData, exec provider.Ex
 		eventCh:         make(chan engineEvent, 512),
 		fillCh:          make(chan fillEvent, 64), // buffered but never dropped
 		clientSideStops: clientStops,
+		barBuffer:       barbuf.New(),
+		dailyTracker:    barbuf.NewDailyTracker(),
 	}
 }
 
@@ -254,6 +262,11 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 			}
 		}
 		csc.SetContractSpecs(stratSpecs)
+	}
+
+	// Pass runtime helpers (bar buffer, daily levels) to strategy.
+	if rhc, ok := e.strategy.(strategy.RuntimeHelpersConsumer); ok {
+		rhc.SetRuntimeHelpers(e.barBuffer, e.dailyTracker)
 	}
 
 	// Read timeframes from the strategy (single source of truth).
@@ -467,8 +480,13 @@ func (e *Engine) handleBar(timeframe string, tick strategy.Tick) {
 	}
 
 	e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
-	if !e.warmingUp && timeframe == e.baseTimeframe {
-		e.portfolio.IncrementHoldingBars(tick.Symbol)
+	if timeframe == e.baseTimeframe {
+		e.barBuffer.Push(tick)
+		date := tick.Timestamp.UTC().Format("2006-01-02")
+		e.dailyTracker.Update(tick.Symbol, date, tick.Open, tick.High, tick.Low, tick.Close)
+		if !e.warmingUp {
+			e.portfolio.IncrementHoldingBars(tick.Symbol)
+		}
 	}
 	e.strategy.SetPortfolio(e.portfolio)
 	orders := e.strategy.OnBar(timeframe, tick)
@@ -507,6 +525,7 @@ func (e *Engine) onQuote(quote strategy.Quote) {
 func (e *Engine) onMarketOpen() {
 	dsh := e.strategy.(strategy.DailySessionHandler) // safe: only called when strategy implements it
 	log.Println("paper engine: market open — calling OnMarketOpen")
+	e.portfolio.ResetDaily()
 	e.strategy.SetPortfolio(e.portfolio)
 	e.submitOrders(dsh.OnMarketOpen())
 }

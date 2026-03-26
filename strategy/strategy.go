@@ -66,6 +66,8 @@ type Portfolio interface {
 	Position(symbol string) *Position
 	Positions() []Position
 	TotalPL() float64
+	DailyPL() float64    // realized + unrealized P&L since last daily reset
+	DailyTrades() int    // completed round-trips since last daily reset
 }
 
 // Trade represents a single real-time trade print from the exchange.
@@ -201,6 +203,32 @@ type LiveContext struct {
 // P&L) and inspect the real broker state before the first live bar.
 type LiveHandler interface {
 	OnLive(ctx LiveContext)
+}
+
+// BarBuffer provides access to recent bar history. Implemented by barbuf.Buffer.
+type BarBuffer interface {
+	Last(symbol string, n int) []Tick
+}
+
+// DailyLevelProvider provides daily price levels. Implemented by barbuf.DailyTracker.
+type DailyLevelProvider interface {
+	Levels(symbol string) DailyLevels
+}
+
+// DailyLevels holds precomputed daily price levels for a symbol.
+type DailyLevels struct {
+	PrevHigh  float64
+	PrevLow   float64
+	PrevClose float64
+	TodayHigh float64
+	TodayLow  float64
+	TodayOpen float64
+}
+
+// RuntimeHelpersConsumer is an optional interface a strategy can implement to
+// receive engine-provided helpers (bar buffer, daily levels) for script globals.
+type RuntimeHelpersConsumer interface {
+	SetRuntimeHelpers(bars BarBuffer, levels DailyLevelProvider)
 }
 
 // ContractSpecConsumer is an optional interface a strategy can implement to

@@ -639,6 +639,56 @@ func (s *ScriptStrategy) SetContractSpecs(specs map[string]strategy.ContractSpec
 }
 
 // ---------------------------------------------------------------------------
+// strategy.RuntimeHelpersConsumer (optional)
+// ---------------------------------------------------------------------------
+
+// SetRuntimeHelpers implements strategy.RuntimeHelpersConsumer.
+// Injects bars() and dailyLevels() JS globals.
+func (s *ScriptStrategy) SetRuntimeHelpers(barBuf strategy.BarBuffer, levels strategy.DailyLevelProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// bars(symbol, count) → [{symbol, timestamp, open, high, low, close, volume}, ...]
+	s.vm.Set("bars", func(call goja.FunctionCall) goja.Value {
+		sym := call.Argument(0).String()
+		n := int(call.Argument(1).ToInteger())
+		if n <= 0 {
+			return s.vm.ToValue([]interface{}{})
+		}
+		ticks := barBuf.Last(sym, n)
+		result := make([]interface{}, len(ticks))
+		for i, t := range ticks {
+			result[i] = map[string]interface{}{
+				"symbol":    t.Symbol,
+				"timestamp": t.Timestamp.UnixMilli(),
+				"date":      t.Timestamp.UTC().Format("2006-01-02"),
+				"time":      t.Timestamp.UTC().Format("15:04"),
+				"open":      t.Open,
+				"high":      t.High,
+				"low":       t.Low,
+				"close":     t.Close,
+				"volume":    t.Volume,
+			}
+		}
+		return s.vm.ToValue(result)
+	})
+
+	// dailyLevels(symbol) → {prevHigh, prevLow, prevClose, todayHigh, todayLow, todayOpen}
+	s.vm.Set("dailyLevels", func(call goja.FunctionCall) goja.Value {
+		sym := call.Argument(0).String()
+		dl := levels.Levels(sym)
+		return s.vm.ToValue(map[string]interface{}{
+			"prevHigh":  dl.PrevHigh,
+			"prevLow":   dl.PrevLow,
+			"prevClose": dl.PrevClose,
+			"todayHigh": dl.TodayHigh,
+			"todayLow":  dl.TodayLow,
+			"todayOpen": dl.TodayOpen,
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -683,6 +733,8 @@ func (s *ScriptStrategy) makePortfolioObj(p strategy.Portfolio) goja.Value {
 		}
 		return s.vm.ToValue(arr)
 	})
+	obj.Set("dailyPL", func(goja.FunctionCall) goja.Value { return s.vm.ToValue(p.DailyPL()) })
+	obj.Set("dailyTrades", func(goja.FunctionCall) goja.Value { return s.vm.ToValue(p.DailyTrades()) })
 	return obj
 }
 

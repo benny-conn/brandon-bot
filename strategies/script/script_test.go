@@ -37,6 +37,8 @@ func newMockPortfolio() *mockPortfolio {
 func (p *mockPortfolio) Cash() float64                          { return p.cash }
 func (p *mockPortfolio) Equity() float64                        { return p.equity }
 func (p *mockPortfolio) TotalPL() float64                       { return p.totalPL }
+func (p *mockPortfolio) DailyPL() float64                       { return 0 }
+func (p *mockPortfolio) DailyTrades() int                       { return 0 }
 func (p *mockPortfolio) Position(symbol string) *strategy.Position { return p.positions[symbol] }
 func (p *mockPortfolio) Positions() []strategy.Position {
 	out := make([]strategy.Position, 0, len(p.positions))
