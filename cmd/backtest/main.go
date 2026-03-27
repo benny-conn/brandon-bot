@@ -60,7 +60,7 @@ func main() {
 		fmt.Printf("Loaded config from %s\n", *configFlag)
 	}
 
-	strat, err := resolveStrategy(*stratName, *scriptFlag, strategyCfg)
+	strat, err := resolveStrategy(*stratName, *scriptFlag, strategyCfg, *capital)
 	if err != nil {
 		log.Fatalf("unknown strategy %q: %v", *stratName, err)
 	}
@@ -219,7 +219,7 @@ func main() {
 	fmt.Printf("\nRun saved to database (id=%d)\n", runID)
 }
 
-func resolveStrategy(name, scriptPath string, strategyCfg json.RawMessage) (strategy.Strategy, error) {
+func resolveStrategy(name, scriptPath string, strategyCfg json.RawMessage, capital float64) (strategy.Strategy, error) {
 	if name != "script" {
 		return nil, fmt.Errorf("unknown strategy %q — all strategies are scripts now; use --script=<file>", name)
 	}
@@ -245,5 +245,5 @@ func resolveStrategy(name, scriptPath string, strategyCfg json.RawMessage) (stra
 	for k, v := range cfg {
 		log.Printf("  %s=%s", k, v)
 	}
-	return script.New(scriptName, string(src), cfg)
+	return script.New(scriptName, string(src), cfg, script.WithCapital(capital))
 }

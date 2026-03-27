@@ -345,6 +345,14 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 		rhc.SetRuntimeHelpers(e.barBuffer, e.dailyTracker)
 	}
 
+	// Call OnInit if the strategy supports it.
+	if init, ok := e.strategy.(strategy.Initializer); ok {
+		if err := init.OnInit(strategy.InitContext{}); err != nil {
+			// Log but don't fail — backtest should still run.
+			fmt.Printf("warning: strategy OnInit error: %v\n", err)
+		}
+	}
+
 	// Check if the strategy supports daily session hooks.
 	dsh, hasDailyHooks := e.strategy.(strategy.DailySessionHandler)
 
@@ -433,6 +441,11 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 				trades = append(trades, e.fillOrders(openOrders, newDay.opens, tick.Timestamp)...)
 			}
 		} else if !hasDailyHooks {
+			// Reset daily P&L at day boundaries even without daily hooks.
+			if date != currentDate {
+				currentDate = date
+				e.portfolio.ResetDaily()
+			}
 			// For non-daily strategies, record equity on every tick.
 			recordEquity(e.portfolio.Equity(), &equityCurve, &peakEquity, &maxDrawdown)
 		}
