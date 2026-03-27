@@ -31,27 +31,16 @@ type scriptOptions struct {
 	logSink   *LogSink
 }
 
-// LogSink captures console.log output from JS scripts during backtesting.
+// LogSink captures console.log output from JS scripts.
 type LogSink struct {
 	mu   sync.Mutex
 	logs []string
 }
 
-const (
-	maxLogEntries   = 50
-	maxLogEntrySize = 500
-)
-
-// Add appends a log entry, truncating if necessary.
+// Add appends a log entry.
 func (ls *LogSink) Add(msg string) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	if len(ls.logs) >= maxLogEntries {
-		return
-	}
-	if len(msg) > maxLogEntrySize {
-		msg = msg[:maxLogEntrySize] + "..."
-	}
 	ls.logs = append(ls.logs, msg)
 }
 
@@ -61,6 +50,15 @@ func (ls *LogSink) Logs() []string {
 	defer ls.mu.Unlock()
 	out := make([]string, len(ls.logs))
 	copy(out, ls.logs)
+	return out
+}
+
+// Drain returns all captured log entries and clears the internal buffer.
+func (ls *LogSink) Drain() []string {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	out := ls.logs
+	ls.logs = nil
 	return out
 }
 
