@@ -119,6 +119,27 @@ func NewEngine(strat strategy.Strategy, initialCapital float64, opts ...EngineOp
 	return e
 }
 
+// tickSizeForSymbol returns the minimum tick size for common futures symbols.
+// Falls back to 0.25 for unknown futures.
+func tickSizeForSymbol(sym string) float64 {
+	switch sym {
+	case "MNQ", "NQ":
+		return 0.25
+	case "MES", "ES":
+		return 0.25
+	case "MYM", "YM":
+		return 1.0
+	case "M2K", "RTY":
+		return 0.10
+	case "MCL", "CL":
+		return 0.01
+	case "MGC", "GC":
+		return 0.10
+	default:
+		return 0.25
+	}
+}
+
 // multiplier returns the point value for a symbol (1.0 for equities).
 func (e *Engine) multiplier(symbol string) float64 {
 	if e.multipliers != nil {
@@ -343,6 +364,20 @@ func (e *Engine) Run(ticks []strategy.Tick) *Results {
 	// Pass runtime helpers to strategy.
 	if rhc, ok := e.strategy.(strategy.RuntimeHelpersConsumer); ok {
 		rhc.SetRuntimeHelpers(e.barBuffer, e.dailyTracker)
+	}
+
+	// Pass contract specs to strategy so getContract() is available in scripts.
+	if csc, ok := e.strategy.(strategy.ContractSpecConsumer); ok && len(e.multipliers) > 0 {
+		specs := make(map[string]strategy.ContractSpec)
+		for sym, pv := range e.multipliers {
+			specs[sym] = strategy.ContractSpec{
+				Symbol:     sym,
+				TickSize:   tickSizeForSymbol(sym),
+				TickValue:  tickSizeForSymbol(sym) * pv,
+				PointValue: pv,
+			}
+		}
+		csc.SetContractSpecs(specs)
 	}
 
 	// Call OnInit if the strategy supports it.
