@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 const (
-	appName    = "brandon-bot"
+	appName    = "runbook"
 	appVersion = "1.0.0"
 )
 

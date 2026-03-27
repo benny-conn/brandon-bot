@@ -18,8 +18,8 @@ import (
 	massivews "github.com/massive-com/client-go/v3/websocket"
 	"github.com/massive-com/client-go/v3/websocket/models"
 
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Config holds Massive provider credentials and settings.

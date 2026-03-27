@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/internal/bracket"
-	"github.com/benny-conn/brandon-bot/internal/portfolio"
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/internal/bracket"
+	"github.com/benny-conn/runbook/internal/portfolio"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // recover runs on startup before the live stream begins:

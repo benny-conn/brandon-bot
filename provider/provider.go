@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Bar is a completed OHLCV candlestick.

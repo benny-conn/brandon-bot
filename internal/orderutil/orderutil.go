@@ -2,7 +2,7 @@
 // utilities used by both the backtest and live engines.
 package orderutil
 
-import "github.com/benny-conn/brandon-bot/strategy"
+import "github.com/benny-conn/runbook/strategy"
 
 // RejectFunc is called with a human-readable reason when an order is rejected.
 type RejectFunc func(reason string)

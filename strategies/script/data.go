@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/provider"
+	"github.com/benny-conn/runbook/provider"
 	"github.com/dop251/goja"
 )
 

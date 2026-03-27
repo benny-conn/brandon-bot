@@ -18,8 +18,8 @@ import (
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/shopspring/decimal"
 
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Config holds Alpaca provider credentials and settings.

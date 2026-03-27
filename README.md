@@ -1,4 +1,4 @@
-# brandon-bot
+# runbook
 
 A trading engine in Go that runs JavaScript strategies against live brokers or historical data. Design a strategy in JS, backtest it, then run it live on a paper account — same code, same engine.
 
@@ -234,7 +234,7 @@ Restarting mid-session is safe — the engine recovers from broker state.
 ## Project Structure
 
 ```
-brandon-bot/
+runbook/
 ├── cmd/
 │   ├── backtest/          # CLI: run a backtest
 │   ├── paper/             # CLI: run live paper trading

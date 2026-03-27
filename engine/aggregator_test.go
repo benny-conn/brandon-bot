@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 func TestParseTimeframe(t *testing.T) {

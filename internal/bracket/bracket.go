@@ -3,7 +3,7 @@
 package bracket
 
 import (
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Pending tracks a TP/SL bracket awaiting execution.

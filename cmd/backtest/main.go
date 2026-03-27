@@ -11,16 +11,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/backtest"
-	"github.com/benny-conn/brandon-bot/internal/db"
-	"github.com/benny-conn/brandon-bot/provider"
-	alpacaprovider "github.com/benny-conn/brandon-bot/providers/alpaca"
-	coinbaseprovider "github.com/benny-conn/brandon-bot/providers/coinbase"
-	kalshiprovider "github.com/benny-conn/brandon-bot/providers/kalshi"
-	massiveprovider "github.com/benny-conn/brandon-bot/providers/massive"
-	topstepxprovider "github.com/benny-conn/brandon-bot/providers/topstepx"
-	"github.com/benny-conn/brandon-bot/strategies/script"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/backtest"
+	"github.com/benny-conn/runbook/internal/db"
+	"github.com/benny-conn/runbook/provider"
+	alpacaprovider "github.com/benny-conn/runbook/providers/alpaca"
+	coinbaseprovider "github.com/benny-conn/runbook/providers/coinbase"
+	kalshiprovider "github.com/benny-conn/runbook/providers/kalshi"
+	massiveprovider "github.com/benny-conn/runbook/providers/massive"
+	topstepxprovider "github.com/benny-conn/runbook/providers/topstepx"
+	"github.com/benny-conn/runbook/strategies/script"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 func main() {

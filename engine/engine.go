@@ -6,12 +6,12 @@ import (
 	"log"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/internal/barbuf"
-	"github.com/benny-conn/brandon-bot/internal/bracket"
-	"github.com/benny-conn/brandon-bot/internal/orderutil"
-	"github.com/benny-conn/brandon-bot/internal/portfolio"
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/internal/barbuf"
+	"github.com/benny-conn/runbook/internal/bracket"
+	"github.com/benny-conn/runbook/internal/orderutil"
+	"github.com/benny-conn/runbook/internal/portfolio"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Store is the persistence interface used by the engine to log orders, fills,

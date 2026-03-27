@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // ParseTimeframe converts a canonical timeframe string to a time.Duration.

@@ -9,7 +9,7 @@ results/
 *.db-shm
 *.db-wal
 service-key.json
-brandon-bot
+runbook
 
 Service.plist
 

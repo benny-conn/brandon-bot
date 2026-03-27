@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/provider"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/provider"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Config holds TopstepX API credentials and optional account selection.

@@ -4,7 +4,7 @@ package barbuf
 import (
 	"sync"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Ensure DailyTracker implements strategy.DailyLevelProvider.

@@ -1,4 +1,4 @@
-module github.com/benny-conn/brandon-bot
+module github.com/benny-conn/runbook
 
 go 1.26.1
 

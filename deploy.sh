@@ -2,16 +2,16 @@
 set -e
 
 MINI="benjaminconn@192.168.1.83"
-REMOTE_DIR="/Users/benjaminconn/brandon-bot"
-PLIST_LABEL="com.bennyconn.brandon-bot"
+REMOTE_DIR="/Users/benjaminconn/runbook"
+PLIST_LABEL="com.bennyconn.runbook"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
-echo "==> Building brandon-bot for arm64 macOS..."
-GOOS=darwin GOARCH=arm64 go build -o brandon-bot ./cmd/paper/main.go
+echo "==> Building runbook for arm64 macOS..."
+GOOS=darwin GOARCH=arm64 go build -o runbook ./cmd/paper/main.go
 
 echo "==> Syncing binary and scripts..."
 ssh "$MINI" "mkdir -p $REMOTE_DIR/scripts $REMOTE_DIR/data $REMOTE_DIR/logs"
-rsync -av brandon-bot "$MINI:$REMOTE_DIR/"
+rsync -av runbook "$MINI:$REMOTE_DIR/"
 
 echo "==> Installing plist and restarting service..."
 rsync -av Service.plist "$MINI:$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 const epsilon = 1e-6

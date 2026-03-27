@@ -3,7 +3,7 @@ package portfolio
 import (
 	"sync"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // SimulatedPortfolio tracks cash, positions, and P&L for backtesting.

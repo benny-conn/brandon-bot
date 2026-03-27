@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 func approxEqual(a, b, tol float64) bool {

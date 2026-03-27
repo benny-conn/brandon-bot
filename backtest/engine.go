@@ -6,12 +6,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/engine"
-	"github.com/benny-conn/brandon-bot/internal/barbuf"
-	"github.com/benny-conn/brandon-bot/internal/bracket"
-	"github.com/benny-conn/brandon-bot/internal/orderutil"
-	"github.com/benny-conn/brandon-bot/internal/portfolio"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/engine"
+	"github.com/benny-conn/runbook/internal/barbuf"
+	"github.com/benny-conn/runbook/internal/bracket"
+	"github.com/benny-conn/runbook/internal/orderutil"
+	"github.com/benny-conn/runbook/internal/portfolio"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 // Trade records a completed fill along with realized P&L (for sells).

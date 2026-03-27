@@ -27,9 +27,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/benny-conn/brandon-bot/provider"
-	topstepxprovider "github.com/benny-conn/brandon-bot/providers/topstepx"
-	"github.com/benny-conn/brandon-bot/strategy"
+	"github.com/benny-conn/runbook/provider"
+	topstepxprovider "github.com/benny-conn/runbook/providers/topstepx"
+	"github.com/benny-conn/runbook/strategy"
 )
 
 func main() {
