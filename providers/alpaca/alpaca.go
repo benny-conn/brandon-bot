@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -283,6 +284,7 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 				if order.Side == "sell" {
 					tp = ref - order.TPDistance
 				}
+				tp = math.Round(tp*100) / 100
 				tpDec := decimal.NewFromFloat(tp)
 				req.TakeProfit = &alp.TakeProfit{LimitPrice: &tpDec}
 			}
@@ -291,6 +293,7 @@ func (p *Provider) PlaceOrder(ctx context.Context, order strategy.Order) (provid
 				if order.Side == "sell" {
 					sl = ref + order.SLDistance
 				}
+				sl = math.Round(sl*100) / 100
 				slDec := decimal.NewFromFloat(sl)
 				req.StopLoss = &alp.StopLoss{StopPrice: &slDec}
 			}
