@@ -297,6 +297,20 @@ func (e *Engine) Run(ctx context.Context, symbols []string) error {
 		return fmt.Errorf("startup recovery: %w", err)
 	}
 
+	// Recovery replaces the portfolio — re-apply futures multipliers so live
+	// P&L is computed with the correct point values.
+	if len(e.contractSpecs) > 0 {
+		multipliers := make(map[string]float64)
+		for sym, spec := range e.contractSpecs {
+			if spec.PointValue > 1.0 {
+				multipliers[sym] = spec.PointValue
+			}
+		}
+		if len(multipliers) > 0 {
+			e.portfolio.SetMultipliers(multipliers)
+		}
+	}
+
 	// If the strategy implements Initializer, call OnInit before any market data.
 	if init, ok := e.strategy.(strategy.Initializer); ok {
 		log.Println("paper engine: calling OnInit...")
