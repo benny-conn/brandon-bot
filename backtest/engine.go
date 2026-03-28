@@ -265,11 +265,12 @@ func (e *Engine) fillOrders(orders []strategy.Order, symbolPrices map[string]flo
 		if order.Side == "buy" {
 			pos := e.portfolio.Position(order.Symbol)
 			if pos != nil && pos.Qty < 0 {
-				shortQty := -pos.Qty
-				if fillQty > shortQty {
-					fillQty = shortQty
+				// Covering a short — compute realized P&L on the covered portion only.
+				closedQty := fillQty
+				if closedQty > -pos.Qty {
+					closedQty = -pos.Qty
 				}
-				realizedPL = (pos.AvgCost - fillPrice) * fillQty * mult
+				realizedPL = (pos.AvgCost - fillPrice) * closedQty * mult
 			} else if mult > 1.0 {
 				// Futures — no notional cash check. Scripts enforce contract limits.
 			} else {
@@ -285,10 +286,12 @@ func (e *Engine) fillOrders(orders []strategy.Order, symbolPrices map[string]flo
 		if order.Side == "sell" {
 			pos := e.portfolio.Position(order.Symbol)
 			if pos != nil && pos.Qty > 0 {
-				if fillQty > pos.Qty {
-					fillQty = pos.Qty
+				// Closing a long — compute realized P&L on the closed portion only.
+				closedQty := fillQty
+				if closedQty > pos.Qty {
+					closedQty = pos.Qty
 				}
-				realizedPL = (fillPrice - pos.AvgCost) * fillQty * mult
+				realizedPL = (fillPrice - pos.AvgCost) * closedQty * mult
 			}
 		}
 

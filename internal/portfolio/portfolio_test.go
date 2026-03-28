@@ -337,3 +337,212 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("expected 100 shares after concurrent buys, got %v", pos)
 	}
 }
+
+// --- Daily P&L tests ---
+
+func TestDailyPL_ResetAndTracking(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+
+	// Buy and sell for $100 profit.
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 10, Price: 110})
+
+	if !approxEqual(p.DailyPL(), 100, 0.01) {
+		t.Errorf("DailyPL() = %v, want 100", p.DailyPL())
+	}
+	if p.DailyTrades() != 1 {
+		t.Errorf("DailyTrades() = %v, want 1", p.DailyTrades())
+	}
+
+	// Reset daily.
+	p.ResetDaily()
+	if p.DailyPL() != 0 {
+		t.Errorf("DailyPL() after reset = %v, want 0", p.DailyPL())
+	}
+	if p.DailyTrades() != 0 {
+		t.Errorf("DailyTrades() after reset = %v, want 0", p.DailyTrades())
+	}
+
+	// Total realized P&L should still include the previous day.
+	if !approxEqual(p.TotalPL(), 100, 0.01) {
+		t.Errorf("TotalPL() = %v, want 100 (should persist across daily reset)", p.TotalPL())
+	}
+}
+
+func TestDailyPL_IncludesUnrealized(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ResetDaily()
+
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+	p.UpdateMarketPrice("AAPL", 105)
+
+	// Daily P&L = 0 realized + (105-100)*10 unrealized = 50
+	if !approxEqual(p.DailyPL(), 50, 0.01) {
+		t.Errorf("DailyPL() = %v, want 50 (unrealized)", p.DailyPL())
+	}
+}
+
+// --- Adding to short position tests ---
+
+func TestApplyFill_AddToShort(t *testing.T) {
+	p := NewSimulatedPortfolio(20000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 10, Price: 100})
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 5, Price: 110})
+
+	pos := p.Position("AAPL")
+	if pos == nil || pos.Qty != -15 {
+		t.Fatalf("expected -15 qty, got %v", pos)
+	}
+	// Weighted avg: (10*100 + 5*110) / 15 = 1550/15 ≈ 103.33
+	expectedAvg := (10.0*100 + 5.0*110) / 15.0
+	if !approxEqual(pos.AvgCost, expectedAvg, 0.01) {
+		t.Errorf("AvgCost = %v, want %v", pos.AvgCost, expectedAvg)
+	}
+}
+
+// --- ComputeFillPL tests ---
+
+func TestComputeFillPL_OpeningPosition(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	fill := strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100}
+	pl := p.ComputeFillPL(fill)
+	if pl != 0 {
+		t.Errorf("ComputeFillPL for opening = %v, want 0", pl)
+	}
+}
+
+func TestComputeFillPL_ClosingLong(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+
+	pl := p.ComputeFillPL(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 10, Price: 110})
+	if !approxEqual(pl, 100, 0.01) {
+		t.Errorf("ComputeFillPL = %v, want 100", pl)
+	}
+}
+
+func TestComputeFillPL_PartialClose(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+
+	pl := p.ComputeFillPL(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 5, Price: 110})
+	if !approxEqual(pl, 50, 0.01) {
+		t.Errorf("ComputeFillPL = %v, want 50 (5 units × $10)", pl)
+	}
+}
+
+func TestComputeFillPL_FlipCapsToClosingPortion(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 5, Price: 100})
+
+	// Selling 8 when holding 5: realized PL only on the 5 closing units.
+	pl := p.ComputeFillPL(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 8, Price: 110})
+	if !approxEqual(pl, 50, 0.01) {
+		t.Errorf("ComputeFillPL = %v, want 50 (only 5 close, 3 open new short)", pl)
+	}
+}
+
+func TestComputeFillPL_CoverShort(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 10, Price: 100})
+
+	pl := p.ComputeFillPL(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 90})
+	if !approxEqual(pl, 100, 0.01) {
+		t.Errorf("ComputeFillPL = %v, want 100", pl)
+	}
+}
+
+func TestComputeFillPL_AddingToPosition(t *testing.T) {
+	p := NewSimulatedPortfolio(20000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+
+	// Adding to a long — no P&L realized.
+	pl := p.ComputeFillPL(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 5, Price: 110})
+	if pl != 0 {
+		t.Errorf("ComputeFillPL for adding = %v, want 0", pl)
+	}
+}
+
+// --- ClassifyFillSide tests ---
+
+func TestClassifyFillSide(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+
+	if p.ClassifyFillSide(strategy.Fill{Side: "buy"}) != "buy" {
+		t.Error("buy should stay buy")
+	}
+	if p.ClassifyFillSide(strategy.Fill{Side: "sell"}) != "sell" {
+		t.Error("sell should stay sell")
+	}
+	if p.ClassifyFillSide(strategy.Fill{Side: "short"}) != "sell" {
+		t.Error("short should normalize to sell")
+	}
+}
+
+// --- SetRealizedPL tests ---
+
+func TestSetRealizedPL(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.SetRealizedPL(500)
+
+	if !approxEqual(p.TotalPL(), 500, 0.01) {
+		t.Errorf("TotalPL() = %v, want 500 (seeded)", p.TotalPL())
+	}
+}
+
+// --- Equity for short equity positions ---
+
+func TestEquity_ShortPosition(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "sell", Qty: 10, Price: 100})
+	// Cash = 10000 + 1000 = 11000
+	// Short 10 @ 100
+
+	p.UpdateMarketPrice("AAPL", 90) // profit
+	// MarketValue = -10 * 90 = -900
+	// Equity = 11000 + (-900) = 10100
+	if !approxEqual(p.Equity(), 10100, 0.01) {
+		t.Errorf("Equity() = %v, want 10100", p.Equity())
+	}
+
+	p.UpdateMarketPrice("AAPL", 110) // loss
+	// MarketValue = -10 * 110 = -1100
+	// Equity = 11000 + (-1100) = 9900
+	if !approxEqual(p.Equity(), 9900, 0.01) {
+		t.Errorf("Equity() = %v, want 9900", p.Equity())
+	}
+}
+
+// --- HoldingBars tests ---
+
+func TestHoldingBars(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+	p.ApplyFill(strategy.Fill{Symbol: "AAPL", Side: "buy", Qty: 10, Price: 100})
+
+	p.IncrementHoldingBars("AAPL")
+	p.IncrementHoldingBars("AAPL")
+	p.IncrementHoldingBars("AAPL")
+
+	pos := p.Position("AAPL")
+	if pos.HoldingBars != 3 {
+		t.Errorf("HoldingBars = %v, want 3", pos.HoldingBars)
+	}
+
+	// Incrementing for a non-existent position should be a no-op.
+	p.IncrementHoldingBars("GOOG") // should not panic
+}
+
+// --- LastPrice tests ---
+
+func TestLastPrice(t *testing.T) {
+	p := NewSimulatedPortfolio(10000)
+
+	if p.LastPrice("AAPL") != 0 {
+		t.Errorf("LastPrice for unseen symbol = %v, want 0", p.LastPrice("AAPL"))
+	}
+
+	p.UpdateMarketPrice("AAPL", 150)
+	if p.LastPrice("AAPL") != 150 {
+		t.Errorf("LastPrice = %v, want 150", p.LastPrice("AAPL"))
+	}
+}

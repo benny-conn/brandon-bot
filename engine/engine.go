@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/benny-conn/runbook/internal/barbuf"
@@ -219,7 +220,10 @@ type Engine struct {
 }
 
 // engineStats tracks event counters for periodic status logging.
+// Fields are read by Snapshot() from the statusLogger goroutine and written
+// by processLoop, so all access must be synchronized.
 type engineStats struct {
+	mu             sync.RWMutex
 	barsReceived   int64
 	tradesReceived int64
 	quotesReceived int64
@@ -264,6 +268,7 @@ func (e *Engine) logf(format string, v ...any) {
 // from any goroutine while the engine is running.
 func (e *Engine) Snapshot() Snapshot {
 	s := &e.stats
+	s.mu.RLock()
 	snap := Snapshot{
 		Uptime:         time.Since(s.startTime),
 		BarsReceived:   s.barsReceived,
@@ -278,6 +283,7 @@ func (e *Engine) Snapshot() Snapshot {
 	for sym, t := range s.lastBarTime {
 		snap.Symbols[sym] = SymbolStatus{LastBarTime: t}
 	}
+	s.mu.RUnlock()
 
 	positions := e.portfolio.Positions()
 	snap.Portfolio = PortfolioSnapshot{
@@ -601,9 +607,11 @@ func (e *Engine) processLoop(ctx context.Context) {
 
 func (e *Engine) handleBar(timeframe string, tick strategy.Tick) {
 	if !e.warmingUp && timeframe == e.baseTimeframe {
+		e.stats.mu.Lock()
 		e.stats.barsReceived++
 		e.stats.lastBarTime[tick.Symbol] = tick.Timestamp
 		e.stats.lastBarAt = time.Now()
+		e.stats.mu.Unlock()
 	}
 
 	e.portfolio.UpdateMarketPrice(tick.Symbol, tick.Close)
@@ -634,7 +642,9 @@ func (e *Engine) handleBar(timeframe string, tick strategy.Tick) {
 }
 
 func (e *Engine) onTrade(trade strategy.Trade) {
+	e.stats.mu.Lock()
 	e.stats.tradesReceived++
+	e.stats.mu.Unlock()
 	e.portfolio.UpdateMarketPrice(trade.Symbol, trade.Price)
 	e.checkStops(trade.Symbol, trade.Price)
 	ts := e.strategy.(strategy.TradeSubscriber) // safe: only called when strategy implements it
@@ -643,7 +653,9 @@ func (e *Engine) onTrade(trade strategy.Trade) {
 }
 
 func (e *Engine) onQuote(quote strategy.Quote) {
+	e.stats.mu.Lock()
 	e.stats.quotesReceived++
+	e.stats.mu.Unlock()
 	qs := e.strategy.(strategy.QuoteSubscriber) // safe: only called when strategy implements it
 	e.strategy.SetPortfolio(e.portfolio)
 	e.submitOrders(qs.OnQuote(quote))
@@ -678,7 +690,9 @@ func (e *Engine) flattenAll(reason string) {
 }
 
 func (e *Engine) onFill(fill strategy.Fill) {
+	e.stats.mu.Lock()
 	e.stats.fillsReceived++
+	e.stats.mu.Unlock()
 
 	// Compute per-fill realized P&L and classify side BEFORE applying.
 	fill.RealizedPL = e.portfolio.ComputeFillPL(fill)
@@ -815,11 +829,15 @@ func (e *Engine) multiplier(symbol string) float64 {
 func (e *Engine) placeOrder(order strategy.Order) {
 	result, err := e.exec.PlaceOrder(e.ctx, order)
 	if err != nil {
+		e.stats.mu.Lock()
 		e.stats.ordersErrored++
+		e.stats.mu.Unlock()
 		e.logf("order error: %v", err)
 		return
 	}
+	e.stats.mu.Lock()
 	e.stats.ordersPlaced++
+	e.stats.mu.Unlock()
 	e.logf("order placed: %s %s qty=%.2f reason=%q id=%s",
 		order.Side, order.Symbol, order.Qty, order.Reason, result.ID)
 
@@ -920,8 +938,11 @@ func (e *Engine) statusLogger(ctx context.Context) {
 
 			// Data gap warning.
 			sinceLastBar := ""
-			if !s.lastBarAt.IsZero() {
-				sinceLastBar = fmt.Sprintf(" | last_bar_wall=%s ago", time.Since(s.lastBarAt).Round(time.Second))
+			s.mu.RLock()
+			lastBarAtCopy := s.lastBarAt
+			s.mu.RUnlock()
+			if !lastBarAtCopy.IsZero() {
+				sinceLastBar = fmt.Sprintf(" | last_bar_wall=%s ago", time.Since(lastBarAtCopy).Round(time.Second))
 			}
 
 			uptime := snap.Uptime.Round(time.Second)

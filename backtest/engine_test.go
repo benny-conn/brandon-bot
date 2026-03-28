@@ -396,3 +396,194 @@ func TestDefaultDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestEngine_FlipLongToShort(t *testing.T) {
+	// Strategy buys 5, then sells 8 (should flip to short 3).
+	callCount := 0
+	strat := &mockStrategy{
+		name: "flip",
+		onBar: func(_ string, tick strategy.Tick) []strategy.Order {
+			callCount++
+			if callCount == 1 {
+				return []strategy.Order{{
+					Symbol: "AAPL", Side: "buy", Qty: 5, OrderType: "market",
+				}}
+			}
+			if callCount == 3 {
+				return []strategy.Order{{
+					Symbol: "AAPL", Side: "sell", Qty: 8, OrderType: "market",
+				}}
+			}
+			return nil
+		},
+	}
+
+	ticks := []strategy.Tick{
+		tick("AAPL", 1, 100, 100),
+		tick("AAPL", 2, 100, 102), // buy fills here at open=100
+		tick("AAPL", 3, 105, 106),
+		tick("AAPL", 4, 110, 112), // sell fills here at open=110
+		tick("AAPL", 5, 108, 108),
+	}
+
+	e := NewEngine(strat, 10000)
+	r := e.Run(ticks)
+
+	// Buy 5 @ 100 = -500 cash
+	// Sell 8 @ 110 = +880 cash (closes 5 long, opens 3 short)
+	// Realized PL on the close: (110 - 100) * 5 = 50
+	if r.TotalTrades != 1 {
+		t.Errorf("TotalTrades = %v, want 1", r.TotalTrades)
+	}
+
+	// Find the sell fill to verify qty wasn't capped.
+	var sellFill *strategy.Fill
+	for _, f := range strat.fills {
+		if f.Side == "sell" {
+			sellFill = &f
+			break
+		}
+	}
+	if sellFill == nil {
+		t.Fatal("expected a sell fill")
+	}
+	if sellFill.Qty != 8 {
+		t.Errorf("sell fill Qty = %v, want 8 (full flip, not capped to 5)", sellFill.Qty)
+	}
+}
+
+func TestEngine_FlipShortToLong(t *testing.T) {
+	// Strategy sells 5, then buys 8 (should flip to long 3).
+	callCount := 0
+	strat := &mockStrategy{
+		name: "flip_short_to_long",
+		onBar: func(_ string, tick strategy.Tick) []strategy.Order {
+			callCount++
+			if callCount == 1 {
+				return []strategy.Order{{
+					Symbol: "AAPL", Side: "sell", Qty: 5, OrderType: "market",
+				}}
+			}
+			if callCount == 3 {
+				return []strategy.Order{{
+					Symbol: "AAPL", Side: "buy", Qty: 8, OrderType: "market",
+				}}
+			}
+			return nil
+		},
+	}
+
+	ticks := []strategy.Tick{
+		tick("AAPL", 1, 100, 100),
+		tick("AAPL", 2, 100, 98), // sell fills here at open=100
+		tick("AAPL", 3, 95, 94),
+		tick("AAPL", 4, 90, 88), // buy fills here at open=90
+		tick("AAPL", 5, 92, 92),
+	}
+
+	e := NewEngine(strat, 10000)
+	r := e.Run(ticks)
+
+	// Sell 5 @ 100 = +500 cash
+	// Buy 8 @ 90 = -720 cash (covers 5 short, opens 3 long)
+	// Realized PL on cover: (100 - 90) * 5 = 50
+	if r.TotalTrades != 1 {
+		t.Errorf("TotalTrades = %v, want 1", r.TotalTrades)
+	}
+
+	// Verify the buy fill was for the full 8, not capped to 5.
+	var buyFill *strategy.Fill
+	for _, f := range strat.fills {
+		if f.Side == "buy" {
+			buyFill = &f
+			break
+		}
+	}
+	if buyFill == nil {
+		t.Fatal("expected a buy fill")
+	}
+	if buyFill.Qty != 8 {
+		t.Errorf("buy fill Qty = %v, want 8 (full flip, not capped to 5)", buyFill.Qty)
+	}
+}
+
+func TestEngine_BracketTPTriggered(t *testing.T) {
+	callCount := 0
+	strat := &mockStrategy{
+		name: "bracket_tp",
+		onBar: func(_ string, tick strategy.Tick) []strategy.Order {
+			callCount++
+			if callCount == 1 {
+				return []strategy.Order{{
+					Symbol:     "AAPL",
+					Side:       "buy",
+					Qty:        10,
+					OrderType:  "market",
+					TPDistance:  5, // TP at fill + 5
+				}}
+			}
+			return nil
+		},
+	}
+
+	ticks := []strategy.Tick{
+		tick("AAPL", 1, 100, 100),
+		tick("AAPL", 2, 100, 102), // buy fills at open=100
+		{Symbol: "AAPL", Timestamp: time.Date(2024, 1, 3, 10, 0, 0, 0, time.UTC),
+			Open: 103, High: 106, Low: 102, Close: 104}, // TP=105, high=106 triggers
+		tick("AAPL", 4, 104, 104),
+	}
+
+	e := NewEngine(strat, 10000)
+	r := e.Run(ticks)
+
+	// TP sell at 105: realized PL = (105 - 100) * 10 = 50
+	if r.TotalTrades != 1 {
+		t.Errorf("TotalTrades = %v, want 1", r.TotalTrades)
+	}
+	if r.WinningTrades != 1 {
+		t.Errorf("WinningTrades = %v, want 1", r.WinningTrades)
+	}
+}
+
+func TestEngine_FuturesNoNotionalCashCheck(t *testing.T) {
+	callCount := 0
+	strat := &mockStrategy{
+		name: "futures_cash",
+		onBar: func(_ string, tick strategy.Tick) []strategy.Order {
+			callCount++
+			if callCount == 1 {
+				return []strategy.Order{{
+					Symbol: "MNQ", Side: "buy", Qty: 1, OrderType: "market",
+				}}
+			}
+			if callCount == 3 {
+				return []strategy.Order{{
+					Symbol: "MNQ", Side: "sell", Qty: 1, OrderType: "market",
+				}}
+			}
+			return nil
+		},
+	}
+
+	ticks := []strategy.Tick{
+		{Symbol: "MNQ", Timestamp: time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC), Open: 24000, High: 24010, Low: 23990, Close: 24005},
+		{Symbol: "MNQ", Timestamp: time.Date(2024, 1, 2, 10, 0, 0, 0, time.UTC), Open: 24000, High: 24050, Low: 23980, Close: 24040},
+		{Symbol: "MNQ", Timestamp: time.Date(2024, 1, 3, 10, 0, 0, 0, time.UTC), Open: 24050, High: 24060, Low: 24030, Close: 24055},
+		{Symbol: "MNQ", Timestamp: time.Date(2024, 1, 4, 10, 0, 0, 0, time.UTC), Open: 24050, High: 24070, Low: 24040, Close: 24060},
+	}
+
+	// With only $1000 cash, equities would reject a $24000 buy. Futures should pass.
+	e := NewEngine(strat, 1000, WithMultipliers(map[string]float64{"MNQ": 2.0}))
+	r := e.Run(ticks)
+
+	// Should have a buy and a sell fill — cash should NOT have blocked the buy.
+	if len(strat.fills) != 2 {
+		t.Fatalf("expected 2 fills, got %d", len(strat.fills))
+	}
+
+	// Realized PL = (24050 - 24000) * 1 * 2.0 = 100
+	if r.TotalTrades != 1 {
+		t.Errorf("TotalTrades = %v, want 1", r.TotalTrades)
+	}
+}
